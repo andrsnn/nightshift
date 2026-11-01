@@ -1,0 +1,13 @@
+{
+  "name": "nightshift",
+  "owner": {
+    "name": "andrsnn"
+  },
+  "plugins": [
+    {
+      "name": "nightshift",
+      "source": "./"
+    }
+  ],
+  "description": "nightshift: keeps a Claude Code session working while you sleep."
+}

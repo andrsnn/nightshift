@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 300" width="880" height="300" font-family="Cascadia Mono, Consolas, Menlo, monospace">
+  <rect width="880" height="300" rx="14" fill="#0d1022"/>
+  <rect width="880" height="38" rx="14" fill="#1a1f40"/>
+  <rect y="24" width="880" height="14" fill="#1a1f40"/>
+  <circle cx="24" cy="19" r="6" fill="#ff6b6b"/><circle cx="44" cy="19" r="6" fill="#ffd166"/><circle cx="64" cy="19" r="6" fill="#06d6a0"/>
+  <text x="440" y="24" fill="#8b93b8" font-size="13" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif">/nightshift log · a real run</text>
+  <g font-size="14">
+    <text x="24" y="70" fill="#8b93b8">&gt; /nightshift 4m Write haiku.txt with 20 haiku about the ocean, each 5-7-5…</text>
+    <text x="24" y="104" fill="#5f678f">09:45</text><text x="84" y="104" fill="#7aa2ff">on    </text><text x="150" y="104" fill="#c9cfee">every 4m: Write haiku.txt with 20 haiku about the ocean…</text>
+    <text x="24" y="132" fill="#5f678f">09:47</text><text x="84" y="132" fill="#ff8a8a">review</text><text x="150" y="132" fill="#c9cfee">round 1 failed: several lines are padding, such as "it changes its skin"</text>
+    <text x="24" y="160" fill="#5f678f">09:49</text><text x="84" y="160" fill="#ff8a8a">review</text><text x="150" y="160" fill="#c9cfee">round 2 failed: "it claims a bare whelk", "the cage door swings shut"…</text>
+    <text x="24" y="188" fill="#5f678f">09:52</text><text x="84" y="188" fill="#ff8a8a">review</text><text x="150" y="188" fill="#c9cfee">round 3 failed: formulaic filler; rewrite the dozen weakest lines</text>
+    <text x="24" y="216" fill="#5f678f">     </text><text x="150" y="216" fill="#8b93b8">… Claude rewrites, checks the counts again, and climbs …</text>
+    <text x="24" y="252" fill="#5f678f">     </text><text x="84" y="252" fill="#7ad08f">status</text><text x="150" y="252" fill="#c9cfee">nightshift on · check-in in 4m</text>
+  </g>
+</svg>

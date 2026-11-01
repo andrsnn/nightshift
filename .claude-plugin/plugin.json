@@ -1,0 +1,44 @@
+{
+  "name": "nightshift",
+  "version": "0.1.0",
+  "description": "Keeps a Claude Code session working while you're away: answers its own questions, settles permission prompts, and checks in every 15 minutes.",
+  "author": {
+    "name": "andrsnn"
+  },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "everyMinutes": {
+      "type": "number",
+      "title": "Check-in interval (minutes)",
+      "description": "How long the session may sit idle before nightshift checks in.",
+      "default": 15
+    },
+    "stallMinutes": {
+      "type": "number",
+      "title": "Stall limit (minutes)",
+      "description": "A turn with no activity for this long is stopped and restarted.",
+      "default": 30
+    },
+    "maxReviews": {
+      "type": "number",
+      "title": "Strict reviews per goal",
+      "description": "How many times a \"done\" claim is reviewed against the goal and sent back before nightshift accepts it.",
+      "default": 5
+    },
+    "reviewNotes": {
+      "type": "string",
+      "title": "How you check work",
+      "description": "Your own bar, given to the reviewer and to Claude, e.g. \"screenshot and compare with the mock; run the game; read copy out loud\".",
+      "default": ""
+    },
+    "extraDeny": {
+      "type": "string",
+      "title": "Extra deny patterns",
+      "description": "Regular expressions, one per line or separated by ;;, for commands nightshift must never approve.",
+      "default": ""
+    }
+  },
+  "icon": "./.claude-plugin/icon.png",
+  "license": "MIT",
+  "repository": "https://github.com/andrsnn/nightshift"
+}

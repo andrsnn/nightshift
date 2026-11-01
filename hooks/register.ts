@@ -67,20 +67,46 @@ const rules = (goal: string): string =>
   [
     'Nightshift is on. The owner is away, probably asleep, and asked you to work on your own until the goal is met.',
     `Goal: ${goal || '(the task the owner gave you in this conversation)'}`,
-    '- Never stop to ask the owner something or wait for approval. Nobody will answer for hours. Make the call yourself: pick what best serves the goal, prefer choices that can be undone, and keep going.',
+    '- Never stop to ask the owner something or wait for approval. Make the call yourself: pick what best serves the goal, prefer choices that can be undone, and keep going. Where you have a recommendation ("I\'d pick B"), take it.',
+    `- ${WAIT_RULE}`,
     '- AskUserQuestion is switched off. Ending your turn with a question wastes the night.',
     '- Keep a short "Decisions I made" list in your final summary so the owner can check them in the morning.',
-    '- If one item truly needs the owner (a password, a payment, publishing, anything that cannot be undone), set it aside, note it, and do all the other work you can, in parallel where you can (background tasks, subagents).',
+    '- If one item truly needs the owner, note it and do all the other work you can, in parallel where you can (background tasks, subagents).',
     '- Run scripts so they never wait on the keyboard: --yes style flags, CI=1, timeouts, background runs for long jobs.',
     '- Permission prompts are answered for you: safe local steps are approved, destructive or outward-facing ones are refused. When one is refused, find a safer way or set it aside, and keep going.',
     '- Before you say done, check it yourself: every part of the goal met (not a sample), the real output looked at this turn (screenshots for anything visual; tests alone are not looking), held up against any mock or reference, and no "still open" list. A strict review will check the same and send it back if it falls short.',
     '- End your turn only when the goal is done and checked, or when everything left needs the owner.',
   ].join('\n')
 
+// The only things that may wait for the owner. Everything else gets decided.
+const WAIT_RULE =
+  'Only four kinds of thing may wait for the owner: a password or login, spending beyond a budget the owner already set, making something public or sending it to other people, and deleting something that cannot be got back. Picking between options, approving a sample or draft, choosing a model or tool to test within the budget, and settling a design are yours to decide. A "needs your OK" list of anything else is not allowed.'
+
 const nudgeText = (ending: Ending, goal: string): string =>
   ending === 'needs-a-human'
-    ? `${NUDGE_MARK} the owner is away and can't help right now. Note what you need from them for the morning, then do every other part of the goal you can without it (${goal || 'see the task above'}). Stop once nothing else can move.`
-    : `${NUDGE_MARK} the owner is asleep and asked you to work on your own, so nobody will answer that. Make the call yourself: choose what best serves the goal (${goal || 'see the task above'}), prefer choices that can be undone, add it to your "Decisions I made" list, and keep going. If one item truly needs the owner, set it aside and do everything else.`
+    ? `${NUDGE_MARK} the owner can't help right now. Note what you need from them, then do every other part of the goal you can without it (${goal || 'see the task above'}). ${WAIT_RULE}`
+    : `${NUDGE_MARK} the owner asked you to work without them, so settle that yourself: choose what best serves the goal (${goal || 'see the task above'}), take your own recommendation where you made one, prefer choices that can be undone, add it to your "Decisions I made" list, and keep going. ${WAIT_RULE}`
+
+// When the session leaves questions for the owner, a fork of it answers them as the owner would.
+const standInPrompt = (goal: string): string =>
+  [
+    'Step out of your role for a moment. You are standing in for the owner, who wants every open question settled without them.',
+    "The owner's goal:",
+    goal || '(the task the owner gave at the start of this conversation)',
+    '',
+    'List every question, decision or approval your last message left for the owner, including anything "set aside", "waiting for you" or listed in a decisions file you mentioned.',
+    "For each, give the answer the owner would most likely give, from the goal, what they said in this conversation and their standing rules. Where you made a recommendation, that is the answer. Spending is fine within a budget the owner already set.",
+    'Answer "skip it for now and do the rest" only for a password or login, spending beyond that budget, making something public or sending it to people, or deleting something that cannot be got back.',
+    'A "Decisions I made" list or a summary of choices already made is not open: leave it out.',
+    'Reply as a numbered list, one line each: the question in a few words, then the answer. No preamble. If nothing is actually left open for the owner, reply with exactly NONE.',
+  ].join('\n')
+
+const answersText = (answers: string): string =>
+  [
+    `${NUDGE_MARK} the owner wants these settled without them. Answers on their behalf:`,
+    answers,
+    `Act on them now, add them to your "Decisions I made" list, and keep going. ${WAIT_RULE}`,
+  ].join('\n')
 
 const reviewText = (gaps: string, round: number, notes: string): string =>
   [
@@ -456,7 +482,18 @@ export const register: Register = (on, options) => {
     if (step.action === 'hold') {
       await log($, 'nudge', `holding: ${pilot.nudgesInRow} nudges with no work done; next check-in will retry`)
     }
-    if (step.action === 'nudge') {
+    if (step.action === 'nudge' && ending === 'asks-a-question') {
+      const reply = await $.model.fork({ prompt: standInPrompt(pilot.goal) })
+      const answers = reply.isAnswered ? reply.text.trim() : ''
+      if (/^NONE/i.test(answers)) {
+        // Nothing was really left open (a summary of decisions read as questions): say nothing.
+        await patchPilot($, { nudgesInRow: pilot.nudgesInRow })
+        await log($, 'answer', 'nothing left open; no message sent')
+      } else {
+        await log($, 'answer', answers ? answers.replace(/\s+/g, ' ') : `no stand-in answer (${reply.isAnswered ? 'empty' : reply.reason})`)
+        void $.prompt.submit({ text: answers ? answersText(answers) : nudgeText(ending, pilot.goal) })
+      }
+    } else if (step.action === 'nudge') {
       await log($, 'nudge', `${ending}: ${e.answer.slice(-160).replace(/\s+/g, ' ')}`)
       void $.prompt.submit({ text: nudgeText(ending, pilot.goal) })
     }

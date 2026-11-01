@@ -60,6 +60,8 @@ test('the fallback spots a closing question', () => {
   expect(guessEnding('Done. Should I also update the docs?')).toBe('asks-a-question')
   expect(guessEnding('Let me know which option you prefer.')).toBe('asks-a-question')
   expect(guessEnding('All tests pass and the branch is pushed.')).toBe('finished')
+  expect(guessEnding('Waiting on T5. The engine question is set aside for you in DECISIONS.md.')).toBe('asks-a-question')
+  expect(guessEnding('Testing Qwen needs your OK.')).toBe('asks-a-question')
 })
 
 test('arguments: off, status, an interval and a goal', () => {

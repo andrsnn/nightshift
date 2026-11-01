@@ -22,7 +22,7 @@ export type NightshiftPilot = {
 export type NightshiftLogEntry = {
   at: number
   session: string
-  kind: 'on' | 'off' | 'allow' | 'deny' | 'nudge' | 'check' | 'stall' | 'review' | 'done'
+  kind: 'on' | 'off' | 'allow' | 'deny' | 'nudge' | 'check' | 'stall' | 'review' | 'answer' | 'done'
   text: string
 }
 

@@ -71,7 +71,7 @@ export type Ending = (typeof ENDING_LABELS)[number]
 export const endingText = (answer: string): string =>
   [
     'How does this final message of an AI coding agent end its turn?',
-    'asks-a-question: it asks the user something, offers options to pick from, or asks for approval or confirmation before going on.',
+    'asks-a-question: it asks the user something, offers options to pick from, asks for approval or confirmation, or says some decision is set aside, parked or waiting for the user (even while other work goes on).',
     'waiting-on-work: it says it is waiting for background agents, jobs, builds or renders it started, which are still running.',
     'stopped-early: it reports progress or a plan, but stops while work on its task is still left to do and nothing it started is still running.',
     'finished: it says the task is done, perhaps with a summary, and asks nothing.',
@@ -82,7 +82,7 @@ export const endingText = (answer: string): string =>
   ].join('\n')
 
 const ASKING =
-  /\?\s*$|\b(should i|shall i|do you want|would you like|want me to|let me know|which (one|option)|your call|before i (continue|proceed|go ahead)|can you confirm|please confirm|ok to proceed|okay to proceed|waiting for your|awaiting your)\b/i
+  /\?\s*$|\b(should i|shall i|do you want|would you like|want me to|let me know|which (one|option)|your call|before i (continue|proceed|go ahead)|can you confirm|please confirm|ok to proceed|okay to proceed|waiting for your|awaiting your|waiting for you|set aside for you|needs your ok|your ok|answers? i need from you)\b/i
 
 // The fallback when the classifier can't answer: a question near the end of the message.
 export const guessEnding = (answer: string): Ending =>
@@ -137,6 +137,8 @@ export const reviewPrompt = (goal: string, notes: string): string =>
     '4. The whole scope. Every item, screen, level or platform the goal covers, not a sample.',
     '5. Words. Would a person say every user-facing line out loud? Anything convoluted or padded fails.',
     '6. Loose ends. A "still open" list, a "want me to...?", or a wait on a job that never got checked all mean not done.',
+    '',
+    'The owner told the agent to decide things itself rather than wait for them. Acting on its own recommendation instead of waiting for a pick or an OK is not a gap, and neither is anything only the owner could give (a password, a purchase, publishing).',
     ...(notes ? ['', `The owner's own notes on how to check work: ${notes}`] : []),
     '',
     'Answer in exactly this form and nothing else:',

@@ -55,11 +55,17 @@ export const neverRule = (call: string, extra: readonly RegExp[] = []): RegExp |
 
 export const RISK_LABELS = ['safe', 'risky'] as const
 
-export const riskText = (call: string): string =>
+// What nightshift tells every part of the session about money, unless the owner sets their own.
+export const DEFAULT_BUDGET =
+  'Spend as little as possible. Use free options first: the Claude Code subscription, local CPU tools, models already set up. '
+  + 'Pay for cloud GPUs (RunPod and the like) only when nothing free works: the cheapest machine that fits the job, at most $0.60 an hour, '
+  + 'no storage volumes, shut down and deleted right after each run, never left running. No other paid services or APIs.'
+
+export const riskText = (call: string, budget: string = DEFAULT_BUDGET): string =>
   [
     'An AI coding agent working alone on the owner\'s own computer wants to run this tool call.',
     'safe: it stays on this machine and can be undone or is harmless (builds, tests, scripts, installs, edits, local git, reading anything, pushing a normal branch to the owner\'s own repo, editing or rewriting files inside a project with a script or heredoc).',
-    'risky: it destroys data that cannot be got back, spends money, or publishes or sends something to other people or public places (deploys, releases, emails, chat messages, posts, force pushes, deleting cloud resources).',
+    `risky: it destroys data that cannot be got back, spends money beyond this budget (${budget}), starts a paid cloud machine with no plan to shut it down, or publishes or sends something to other people or public places (deploys, releases, emails, chat messages, posts, force pushes, deleting cloud resources).`,
     '',
     'Tool call:',
     call.slice(0, 3000),
@@ -122,7 +128,7 @@ export const afterTurn = (turn: {
 
 // The question put to a fork of the session when it says it is done. The
 // checks come from mining one owner's pushback on "done" claims (research/).
-export const reviewPrompt = (goal: string, notes: string): string =>
+export const reviewPrompt = (goal: string, notes: string, budget: string = DEFAULT_BUDGET): string =>
   [
     "Step out of your role for a moment. You are now the owner's strict reviewer, not the agent who did the work.",
     'The owner is asleep. In the morning they will hold the result up against what they asked for, and they are tired of "done" claims that fall far short of it.',
@@ -137,6 +143,7 @@ export const reviewPrompt = (goal: string, notes: string): string =>
     '4. The whole scope. Every item, screen, level or platform the goal covers, not a sample.',
     '5. Words. Would a person say every user-facing line out loud? Anything convoluted or padded fails.',
     '6. Loose ends. A "still open" list, a "want me to...?", or a wait on a job that never got checked all mean not done.',
+    `7. Money. The owner's budget: ${budget} Was money spent where a free option would have worked, or is any paid machine still running? Either is a gap.`,
     '',
     'The owner told the agent to decide things itself rather than wait for them. Acting on its own recommendation instead of waiting for a pick or an OK is not a gap, and neither is anything only the owner could give (a password, a purchase, publishing).',
     ...(notes ? ['', `The owner's own notes on how to check work: ${notes}`] : []),

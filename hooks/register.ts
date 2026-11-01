@@ -15,6 +15,7 @@ import {
   parseReview,
   reviewPrompt,
   riskText,
+  DEFAULT_BUDGET,
   RISK_LABELS,
 } from './judge'
 import type { Ending } from './judge'
@@ -69,6 +70,7 @@ const rules = (goal: string): string =>
     `Goal: ${goal || '(the task the owner gave you in this conversation)'}`,
     '- Never stop to ask the owner something or wait for approval. Make the call yourself: pick what best serves the goal, prefer choices that can be undone, and keep going. Where you have a recommendation ("I\'d pick B"), take it.',
     `- ${WAIT_RULE}`,
+    `- ${costRule()}`,
     '- AskUserQuestion is switched off. Ending your turn with a question wastes the night.',
     '- Keep a short "Decisions I made" list in your final summary so the owner can check them in the morning.',
     '- If one item truly needs the owner, note it and do all the other work you can, in parallel where you can (background tasks, subagents).',
@@ -79,6 +81,10 @@ const rules = (goal: string): string =>
   ].join('\n')
 
 // The only things that may wait for the owner. Everything else gets decided.
+// Set from the owner's budget setting when the module registers.
+let budget = DEFAULT_BUDGET
+const costRule = (): string => `Money: ${budget} When you choose, choose the cheapest option that does the job.`
+
 const WAIT_RULE =
   'Only four kinds of thing may wait for the owner: a password or login, spending beyond a budget the owner already set, making something public or sending it to other people, and deleting something that cannot be got back. Picking between options, approving a sample or draft, choosing a model or tool to test within the budget, and settling a design are yours to decide. A "needs your OK" list of anything else is not allowed.'
 
@@ -95,7 +101,8 @@ const standInPrompt = (goal: string): string =>
     goal || '(the task the owner gave at the start of this conversation)',
     '',
     'List every question, decision or approval your last message left for the owner, including anything "set aside", "waiting for you" or listed in a decisions file you mentioned.',
-    "For each, give the answer the owner would most likely give, from the goal, what they said in this conversation and their standing rules. Where you made a recommendation, that is the answer. Spending is fine within a budget the owner already set.",
+    "For each, give the answer the owner would most likely give, from the goal, what they said in this conversation and their standing rules. Where you made a recommendation, that is the answer, unless a cheaper option does the job just as well: then pick the cheaper one.",
+    costRule(),
     'Answer "skip it for now and do the rest" only for a password or login, spending beyond that budget, making something public or sending it to people, or deleting something that cannot be got back.',
     'A "Decisions I made" list or a summary of choices already made is not open: leave it out.',
     'Reply as a numbered list, one line each: the question in a few words, then the answer. No preamble. If nothing is actually left open for the owner, reply with exactly NONE.',
@@ -105,7 +112,7 @@ const answersText = (answers: string): string =>
   [
     `${NUDGE_MARK} the owner wants these settled without them. Answers on their behalf:`,
     answers,
-    `Act on them now, add them to your "Decisions I made" list, and keep going. ${WAIT_RULE}`,
+    `Act on them now, add them to your "Decisions I made" list, and keep going. ${WAIT_RULE} ${costRule()}`,
   ].join('\n')
 
 const reviewText = (gaps: string, round: number, notes: string): string =>
@@ -121,8 +128,9 @@ const checkText = (goal: string, idleMs: number): string =>
     `${CHECK_MARK}: the owner is still away and this session has been idle for ${minutes(idleMs)}.`,
     `Goal: ${goal || '(the task the owner gave you in this conversation)'}`,
     '1. Look for anything stuck: a question you asked, a decision you put off, a background job or agent that failed or hung, a script waiting on input. Settle it yourself.',
-    '2. If work toward the goal is left, carry on with it now.',
-    '3. If the goal is fully done, check it (run the tests or checks it calls for), then say it is done in one line with your "Decisions I made" list.',
+    '2. Make sure no paid cloud machine (a RunPod pod or the like) is left running with nothing to do; shut down and delete any that are.',
+    '3. If work toward the goal is left, carry on with it now.',
+    '4. If the goal is fully done, check it (run the tests or checks it calls for), then say it is done in one line with your "Decisions I made" list.',
   ].join('\n')
 
 const stallText = (stallMs: number): string =>
@@ -228,6 +236,7 @@ export const register: Register = (on, options) => {
   const extraDeny = parseExtraDeny(options.extraDeny)
   const maxReviews = Math.max(0, Number(options.maxReviews ?? 5))
   const reviewNotes = String(options.reviewNotes ?? '').trim()
+  budget = String(options.budget ?? '').trim() || DEFAULT_BUDGET
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -412,7 +421,7 @@ export const register: Register = (on, options) => {
 
     const call = describeCall(e.tool_name, e.tool_input)
     const rule = neverRule(call, extraDeny)
-    const risk = rule ? 'risky' : FILE_TOOLS.has(e.tool_name) ? 'safe' : await classify($, riskText(call), RISK_LABELS)
+    const risk = rule ? 'risky' : FILE_TOOLS.has(e.tool_name) ? 'safe' : await classify($, riskText(call, budget), RISK_LABELS)
 
     if (risk === 'risky') {
       await log($, 'deny', call)
@@ -464,7 +473,7 @@ export const register: Register = (on, options) => {
     await patchPilot($, { nudgesInRow: step.nudgesInRow })
 
     if (step.action === 'review') {
-      const reply = await $.model.fork({ prompt: reviewPrompt(pilot.goal, reviewNotes) })
+      const reply = await $.model.fork({ prompt: reviewPrompt(pilot.goal, reviewNotes, budget) })
       const review = reply.isAnswered ? parseReview(reply.text) : undefined
       const round = pilot.reviewRounds + 1
       await patchPilot($, { reviewRounds: round })

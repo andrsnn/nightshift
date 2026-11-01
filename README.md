@@ -17,6 +17,7 @@ nightshift is a Claude Code plugin that keeps the session working while you're a
 - **Answers its own questions.** If Claude ends a turn asking you something, nightshift sends it back: nobody will answer, so make the call, write it down, and keep going. The question tool is switched off while it runs.
 - **Holds Claude to your goal.** When Claude says it's done, a strict reviewer checks the work against what you first asked for. The reviewer is a copy of the session with the whole conversation. Did every part get done, or only a sample? Did anyone actually look at the output, or only run the tests? Would you accept it next to your mock? If not, the work goes back with a list of gaps, up to 5 times. It only reviews when nothing is still running.
 - **Settles permission prompts.** Only prompts that would really wait for you: your rules and auto mode decide first. Safe local steps are approved. Anything destructive or public is refused, with a reason, so Claude takes another route instead of waiting. Examples: force pushes, publishing, deploys, dropping databases, rebooting, sending messages.
+- **Spends as little as it can.** Free options come first: your Claude Code subscription, local tools, models already set up. Cloud GPUs such as RunPod only when nothing free works: the cheapest machine that fits, at most $0.60 an hour, shut down right after each run. Check-ins look for paid machines left running, and the reviewer counts wasted money as a gap.
 - **Stays quiet otherwise.** It only speaks up when Claude is stuck or off course. Waiting on its own agents isn't stuck: their reports wake Claude, so nightshift says nothing.
 - **Checks in.** If nothing at all happens for 15 minutes (no turn, no tool call from any agent), it asks Claude what's stuck and gets it moving again.
 - **Restarts stuck turns.** A turn with no activity for 30 minutes is stopped, and Claude is told to try another way.
@@ -64,6 +65,7 @@ Change these in `/config` under nightshift.
 | Stall limit | 30 minutes | How long a turn may go with no activity before it's restarted. |
 | Strict reviews per goal | 5 | How many times a "done" gets sent back before nightshift accepts it. |
 | How you check work | empty | Your own bar, given to the reviewer. For example: "screenshot every screen and compare with the mock; run the game; read the copy out loud." |
+| Money rules | free first; cloud GPUs at most $0.60/h, shut down after each run | What Claude may spend while you're away. |
 | Extra deny patterns | empty | Regular expressions for commands it must never approve, separated by `;;`. |
 
 ## Where the reviewer's checks come from

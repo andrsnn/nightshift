@@ -1,6 +1,6 @@
 {
   "name": "nightshift",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Keeps a Claude Code session working while you're away: answers its own questions, settles permission prompts, and checks in every 15 minutes.",
   "author": {
     "name": "andrsnn"
@@ -29,6 +29,12 @@
       "type": "string",
       "title": "How you check work",
       "description": "Your own bar, given to the reviewer and to Claude, e.g. \"screenshot and compare with the mock; run the game; read copy out loud\".",
+      "default": ""
+    },
+    "budget": {
+      "type": "string",
+      "title": "Money rules",
+      "description": "What Claude may spend while you're away. Empty uses the default: free options first; cloud GPUs only when nothing free works, at most $0.60 an hour, no storage volumes, shut down right after each run.",
       "default": ""
     },
     "extraDeny": {

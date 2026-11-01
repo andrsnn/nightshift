@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { afterTurn, describeCall, guessEnding, parseReview, reviewPrompt, neverRule, parseArgs, parseExtraDeny } from '../hooks/judge'
+import { DEFAULT_BUDGET, riskText, afterTurn, describeCall, guessEnding, parseReview, reviewPrompt, neverRule, parseArgs, parseExtraDeny } from '../hooks/judge'
 
 const engine = (on: On, classifyAs: string) => {
   mock.clock(on, { now: 1_000_000 })
@@ -154,4 +154,11 @@ test('a review reads its verdict and gaps', () => {
   // No verdict at all counts as a fail, so a garbled review never ends the night early.
   expect(parseReview('looks fine to me').isPass).toBe(false)
   expect(reviewPrompt('ship the menu', 'run the game')).toContain('ship the menu')
+})
+
+test('money: the budget reaches the reviewer and the risk check', () => {
+  expect(DEFAULT_BUDGET).toContain('$0.60')
+  expect(reviewPrompt('train a model', '')).toContain('free option')
+  expect(riskText('Bash: runpodctl create pod --gpuType "H100"')).toContain('$0.60')
+  expect(riskText('Bash: x', 'never spend anything')).toContain('never spend anything')
 })

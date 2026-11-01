@@ -102,8 +102,15 @@ const stallText = (stallMs: number): string =>
 
 // Goal from the conversation when `/nightshift` is run without one.
 const goalFromConversation = async ($: $): Promise<string> => {
+  // Skip wrappers, slash commands and prompts any plugin sent (nightshift's own included).
   const rows = (await $.session.messages()).filter(
-    row => row.role === 'user' && row.text.trim() !== '' && !row.text.startsWith('<'),
+    row =>
+      row.role === 'user' &&
+      row.text.trim() !== '' &&
+      !/^\s*[</]/.test(row.text) &&
+      !/plugin sent a message/i.test(row.text) &&
+      !row.text.includes(NUDGE_MARK) &&
+      !row.text.includes(CHECK_MARK),
   )
   const first = rows[0]?.text.trim().slice(0, 800) ?? ''
   const last = rows.length > 1 ? (rows[rows.length - 1]?.text.trim().slice(0, 600) ?? '') : ''

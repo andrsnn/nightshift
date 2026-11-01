@@ -8,6 +8,9 @@ export type NightshiftPilot = {
   turnKind: 'check' | 'nudge' | 'other'
   lastActivityAt: number
   lastTurnEndAt: number
+  // Background work (commands, agents, monitors, workflows, scheduled wake-ups) the last Stop reported.
+  workInFlight: number
+  stopAt: number
   toolCallsThisTurn: number
   nudgesInRow: number
   // Strict reviews of a "done" claim since the owner last typed.

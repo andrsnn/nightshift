@@ -1,6 +1,6 @@
 {
   "name": "nightshift",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Keeps a Claude Code session working while you're away: answers its own questions, settles permission prompts, and checks in every 15 minutes.",
   "author": {
     "name": "andrsnn"

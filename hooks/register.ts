@@ -33,6 +33,8 @@ const OFF: NightshiftPilot = {
   turnKind: 'other',
   lastActivityAt: 0,
   lastTurnEndAt: 0,
+  workInFlight: 0,
+  stopAt: 0,
   toolCallsThisTurn: 0,
   nudgesInRow: 0,
   reviewRounds: 0,
@@ -126,8 +128,13 @@ const classify = async ($: $, text: string, labels: readonly string[]): Promise<
   }
 }
 
-// Agents still at work: their reports wake the session, so waiting on them is not being stuck.
-const isWorkRunning = async ($: $): Promise<boolean> => {
+// Work still in flight wakes the session when it reports, so waiting on it is not being stuck.
+// The Stop event lists every kind (background commands, agents, monitors, workflows,
+// scheduled wake-ups); the agent list backs it up.
+const hasFreshStop = (pilot: NightshiftPilot): boolean => pilot.stopAt >= pilot.lastTurnEndAt - 3000
+
+const isWorkRunning = async ($: $, pilot: NightshiftPilot): Promise<boolean> => {
+  if (hasFreshStop(pilot) && pilot.workInFlight > 0) return true
   try {
     return (await $.agent.list()).some(agent => agent.status === 'running' || agent.status === 'pending')
   } catch {
@@ -176,8 +183,10 @@ const tick = async ($: $, stallMs: number): Promise<void> => {
 
   // Check in only when nothing at all has happened for the whole interval: no turn, no tool
   // call from any agent. A session whose agents are busy is left alone.
+  // With work still in flight, give it until the stall limit before asking what's stuck.
   const quietMs = now - quietSince(pilot)
-  if (!pilot.isTurnRunning && quietMs >= pilot.everyMs) {
+  const limitMs = hasFreshStop(pilot) && pilot.workInFlight > 0 ? Math.max(pilot.everyMs, stallMs) : pilot.everyMs
+  if (!pilot.isTurnRunning && quietMs >= limitMs) {
     // Stamp now so a slow start doesn't fire a second check.
     await patchPilot($, { lastTurnEndAt: now })
     await log($, 'check', `nothing happened for ${minutes(quietMs)}`)
@@ -393,6 +402,16 @@ export const register: Register = (on, options) => {
     return { decision: { behavior: 'allow' } }
   }).catch(($, e, next) => next(e))
 
+  on('classic.Stop', async ($, e, next) => {
+    const result = await next(e)
+    await patchPilot($, {
+      workInFlight: (e.background_tasks?.length ?? 0) + (e.session_crons?.length ?? 0),
+      stopAt: await $.clock.now(),
+    })
+
+    return result
+  })
+
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)
     if (e.agentId !== undefined) return done
@@ -412,7 +431,10 @@ export const register: Register = (on, options) => {
     if (e.reason !== 'answer') return done
 
     const ending = ((await classify($, endingText(e.answer), ENDING_LABELS)) ?? guessEnding(e.answer)) as Ending
-    const step = afterTurn({ ending, ...pilot, maxReviews, isWorkRunning: await isWorkRunning($) })
+    // The Stop event that lists background work may land just after this one.
+    if (!hasFreshStop(await getPilot($))) await $.clock.sleep(1500)
+    const settled = await getPilot($)
+    const step = afterTurn({ ending, ...settled, maxReviews, isWorkRunning: await isWorkRunning($, settled) })
     await patchPilot($, { nudgesInRow: step.nudgesInRow })
 
     if (step.action === 'review') {

@@ -15,9 +15,10 @@ nightshift is a Claude Code plugin that keeps the session working while you're a
 ## What it does
 
 - **Answers its own questions.** If Claude ends a turn asking you something, nightshift sends it back: nobody will answer, so make the call, write it down, and keep going. The question tool is switched off while it runs.
-- **Holds Claude to your goal.** When Claude says it's done, a strict reviewer checks the work against what you first asked for. The reviewer is a copy of the session with the whole conversation. Did every part get done, or only a sample? Did anyone actually look at the output, or only run the tests? Would you accept it next to your mock? If not, the work goes back with a list of gaps, up to 5 times.
-- **Settles permission prompts.** Safe local steps are approved. Anything destructive or public is refused, with a reason, so Claude takes another route instead of waiting. Examples: force pushes, publishing, deploys, dropping databases, rebooting, sending messages.
-- **Checks in.** After 15 minutes idle it asks Claude what's stuck and gets it moving again.
+- **Holds Claude to your goal.** When Claude says it's done, a strict reviewer checks the work against what you first asked for. The reviewer is a copy of the session with the whole conversation. Did every part get done, or only a sample? Did anyone actually look at the output, or only run the tests? Would you accept it next to your mock? If not, the work goes back with a list of gaps, up to 5 times. It only reviews when nothing is still running.
+- **Settles permission prompts.** Only prompts that would really wait for you: your rules and auto mode decide first. Safe local steps are approved. Anything destructive or public is refused, with a reason, so Claude takes another route instead of waiting. Examples: force pushes, publishing, deploys, dropping databases, rebooting, sending messages.
+- **Stays quiet otherwise.** It only speaks up when Claude is stuck or off course. Waiting on its own agents isn't stuck: their reports wake Claude, so nightshift says nothing.
+- **Checks in.** If nothing at all happens for 15 minutes (no turn, no tool call from any agent), it asks Claude what's stuck and gets it moving again.
 - **Restarts stuck turns.** A turn with no activity for 30 minutes is stopped, and Claude is told to try another way.
 - **Keeps a log** of everything it approved, refused and sent back, for the morning.
 
@@ -49,7 +50,9 @@ nightshift is built on Claude Code's function-hooks plugin API, which is in earl
 | `/nightshift log` | Show what it approved, refused and sent back. |
 | `/nightshift off` | Turn it off. Typing anything yourself also resets its counters. |
 
-The status line shows `nightshift on · check-in in 12m` while it runs, and `nightshift: goal done` once a review passes.
+It stays on when the session restarts.
+
+The status line shows `nightshift on` while it runs, and `nightshift: goal done` once a review passes.
 
 ## Settings
 

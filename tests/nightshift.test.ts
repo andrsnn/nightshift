@@ -15,6 +15,7 @@ const engine = (on: On, classifyAs: string) => {
   on('prompt.submit', (_, e) => ({ text: e.text }))
   // Core would put every call here to the person.
   on('tool.check', () => ({ decision: 'ask' }))
+  on('agent.list', () => ({ value: [] }))
 }
 
 // `$.command.run` as the person's Enter would raise it.
@@ -69,50 +70,78 @@ test('arguments: off, status, an interval and a goal', () => {
   expect(parseArgs('ship it')).toEqual({ kind: 'on', goal: 'ship it' })
 })
 
-test('while off, permission asks pass through untouched', async ($, on) => {
+// A permission prompt that would really wait for the owner, as the engine raises it.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const prompt = async ($: any, tool_name: string, tool_input: unknown): Promise<string | undefined> =>
+  (await $.classic.PermissionRequest({ tool_name, tool_input }))?.decision?.behavior
+
+test('while off, permission prompts are left to the owner', async ($, on) => {
   engine(on, 'safe')
+  on('classic.PermissionRequest', () => ({}))
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
 
-  const verdict = await $.tool.check({ tool: 'Bash', input: { command: 'python run.py' } })
-  expect(verdict.decision).toBe('ask')
+  expect(await prompt($, 'Bash', { command: 'python run.py' })).toBeUndefined()
 })
 
-test('while on, safe asks are approved, risky ones and questions refused', async ($, on) => {
+test('while on, safe prompts are approved, risky ones and questions refused', async ($, on) => {
   engine(on, 'safe')
+  on('classic.PermissionRequest', () => ({}))
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   const ran = await run($, 'finish the parser')
   expect(ran.text).toContain('Nightshift on')
 
-  expect((await $.tool.check({ tool: 'Bash', input: { command: 'python run.py' } })).decision).toBe('allow')
-  expect((await $.tool.check({ tool: 'Bash', input: { command: 'git push --force' } })).decision).toBe('deny')
+  expect(await prompt($, 'Bash', { command: 'python run.py' })).toBe('allow')
+  expect(await prompt($, 'Bash', { command: 'git push --force' })).toBe('deny')
   expect((await $.tool.check({ tool: 'AskUserQuestion', input: { questions: [] } })).decision).toBe('deny')
+  // Everything else at tool.check is left to the session's own rules and auto mode.
+  expect((await $.tool.check({ tool: 'Bash', input: { command: 'python run.py' } })).decision).toBe('ask')
 
   await run($, 'off')
-  expect((await $.tool.check({ tool: 'Bash', input: { command: 'python run.py' } })).decision).toBe('ask')
+  expect(await prompt($, 'Bash', { command: 'python run.py' })).toBeUndefined()
 })
 
 test('the classifier can refuse what the never-list misses', async ($, on) => {
   engine(on, 'risky')
+  on('classic.PermissionRequest', () => ({}))
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await run($, 'tidy the inbox')
 
-  const verdict = await $.tool.check({ tool: 'mcp__gmail__send', input: { to: 'x@y.z' } })
-  expect(verdict.decision).toBe('deny')
+  expect(await prompt($, 'mcp__gmail__send', { to: 'x@y.z' })).toBe('deny')
   // A local file write never goes to the classifier.
-  expect((await $.tool.check({ tool: 'Write', input: { file_path: 'a.py', content: 'import os' } })).decision).toBe('allow')
+  expect(await prompt($, 'Write', { file_path: 'a.py', content: 'import os' })).toBe('allow')
 })
 
-test('after a turn: nudge questions, hold after three idle nudges, review done claims', () => {
-  const base = { toolCallsThisTurn: 0, nudgesInRow: 0, reviewRounds: 0, maxReviews: 5 }
+test('nightshift comes back on when the session restarts', async ($, on) => {
+  engine(on, 'safe')
+  on('classic.PermissionRequest', () => ({}))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await run($, 'finish the parser')
+  // A fresh session with the same id: the session's own state is gone, the store is not.
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  expect((await run($, 'status')).text).toContain('Nightshift on')
+})
+
+test('after a turn: speak up only when blocked or off course', () => {
+  const base = { toolCallsThisTurn: 0, nudgesInRow: 0, reviewRounds: 0, maxReviews: 5, isWorkRunning: false }
+  // Blocked: a question, or a stop with nothing running.
   expect(afterTurn({ ...base, ending: 'asks-a-question' })).toEqual({ action: 'nudge', nudgesInRow: 1 })
   expect(afterTurn({ ...base, ending: 'stopped-early', nudgesInRow: 2 })).toEqual({ action: 'nudge', nudgesInRow: 3 })
   expect(afterTurn({ ...base, ending: 'asks-a-question', nudgesInRow: 3 })).toEqual({ action: 'hold', nudgesInRow: 3 })
-  // A turn that did work starts the count again.
   expect(afterTurn({ ...base, ending: 'asks-a-question', nudgesInRow: 3, toolCallsThisTurn: 4 })).toEqual({ action: 'nudge', nudgesInRow: 1 })
   expect(afterTurn({ ...base, ending: 'needs-a-human' })).toEqual({ action: 'nudge', nudgesInRow: 1 })
   expect(afterTurn({ ...base, ending: 'needs-a-human', nudgesInRow: 1 })).toEqual({ action: 'hold', nudgesInRow: 1 })
+  // Waiting on agents that are still working is not being stuck: say nothing.
+  const busy = { ...base, isWorkRunning: true }
+  expect(afterTurn({ ...busy, ending: 'waiting-on-work' }).action).toBe('rest')
+  expect(afterTurn({ ...busy, ending: 'stopped-early' }).action).toBe('rest')
+  expect(afterTurn({ ...busy, ending: 'finished' }).action).toBe('rest')
+  // ...but a question for the owner still gets answered.
+  expect(afterTurn({ ...busy, ending: 'asks-a-question' }).action).toBe('nudge')
+  // Says it is waiting, but nothing is running: that is a stall.
+  expect(afterTurn({ ...base, ending: 'waiting-on-work' }).action).toBe('nudge')
+  // "Done" with nothing running gets reviewed; when reviews run out it rests, never "done".
   expect(afterTurn({ ...base, ending: 'finished' })).toEqual({ action: 'review', nudgesInRow: 0 })
-  expect(afterTurn({ ...base, ending: 'finished', reviewRounds: 5 })).toEqual({ action: 'done', nudgesInRow: 0 })
+  expect(afterTurn({ ...base, ending: 'finished', reviewRounds: 5 })).toEqual({ action: 'rest', nudgesInRow: 0 })
 })
 
 test('a review reads its verdict and gaps', () => {

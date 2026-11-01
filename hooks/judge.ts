@@ -58,21 +58,22 @@ export const RISK_LABELS = ['safe', 'risky'] as const
 export const riskText = (call: string): string =>
   [
     'An AI coding agent working alone on the owner\'s own computer wants to run this tool call.',
-    'safe: it stays on this machine and can be undone or is harmless (builds, tests, scripts, installs, edits, local git, reading anything, pushing a normal branch to the owner\'s own repo).',
+    'safe: it stays on this machine and can be undone or is harmless (builds, tests, scripts, installs, edits, local git, reading anything, pushing a normal branch to the owner\'s own repo, editing or rewriting files inside a project with a script or heredoc).',
     'risky: it destroys data that cannot be got back, spends money, or publishes or sends something to other people or public places (deploys, releases, emails, chat messages, posts, force pushes, deleting cloud resources).',
     '',
     'Tool call:',
     call.slice(0, 3000),
   ].join('\n')
 
-export const ENDING_LABELS = ['asks-a-question', 'stopped-early', 'finished', 'needs-a-human'] as const
+export const ENDING_LABELS = ['asks-a-question', 'waiting-on-work', 'stopped-early', 'finished', 'needs-a-human'] as const
 export type Ending = (typeof ENDING_LABELS)[number]
 
 export const endingText = (answer: string): string =>
   [
     'How does this final message of an AI coding agent end its turn?',
     'asks-a-question: it asks the user something, offers options to pick from, or asks for approval or confirmation before going on.',
-    'stopped-early: it reports progress or a plan, but stops while work on its task is still left to do.',
+    'waiting-on-work: it says it is waiting for background agents, jobs, builds or renders it started, which are still running.',
+    'stopped-early: it reports progress or a plan, but stops while work on its task is still left to do and nothing it started is still running.',
     'finished: it says the task is done, perhaps with a summary, and asks nothing.',
     'needs-a-human: it cannot go on without something only a person can give (a password, a login, a payment, a physical action).',
     '',
@@ -89,24 +90,31 @@ export const guessEnding = (answer: string): Ending =>
 
 const MAX_NUDGES_IN_ROW = 3
 
-// What to do when a main-loop turn ends. Nudges in a row count only turns that
-// did no work, so a session that keeps asking without acting is left alone
-// until the next check-in instead of looping. A "done" claim goes to a strict
-// review until the review passes or the rounds run out.
+// What to do when a main-loop turn ends. nightshift speaks up only when the
+// session is blocked or off course:
+// - a question for the owner, or a stop with nothing running, gets a nudge;
+// - waiting on agents that are still working gets nothing (their reports wake it);
+// - "done" with nothing running gets a strict review; with work still running it waits.
+// Nudges in a row count only turns that did no work, so a session that keeps
+// stopping without acting is left alone until the next check-in.
 export const afterTurn = (turn: {
   ending: Ending
   toolCallsThisTurn: number
   nudgesInRow: number
   reviewRounds: number
   maxReviews: number
-}): { action: 'review' | 'done' | 'hold' | 'nudge'; nudgesInRow: number } => {
+  isWorkRunning: boolean
+}): { action: 'review' | 'rest' | 'hold' | 'nudge'; nudgesInRow: number } => {
   const nudgesInRow = turn.toolCallsThisTurn > 0 ? 0 : turn.nudgesInRow
+  const isWaiting = turn.ending === 'waiting-on-work' || turn.ending === 'stopped-early'
+
+  if (turn.isWorkRunning && (isWaiting || turn.ending === 'finished')) return { action: 'rest', nudgesInRow }
 
   if (turn.ending === 'finished') {
-    return { action: turn.reviewRounds < turn.maxReviews ? 'review' : 'done', nudgesInRow: 0 }
+    return { action: turn.reviewRounds < turn.maxReviews ? 'review' : 'rest', nudgesInRow: 0 }
   }
 
-  // A human-only block gets one nudge to do everything else; a question gets a few.
+  // A human-only block gets one nudge to do everything else; a question or a stall gets a few.
   const limit = turn.ending === 'needs-a-human' ? 1 : MAX_NUDGES_IN_ROW
 
   return nudgesInRow >= limit ? { action: 'hold', nudgesInRow } : { action: 'nudge', nudgesInRow: nudgesInRow + 1 }

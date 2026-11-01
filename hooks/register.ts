@@ -126,14 +126,35 @@ const classify = async ($: $, text: string, labels: readonly string[]): Promise<
   }
 }
 
+// Agents still at work: their reports wake the session, so waiting on them is not being stuck.
+const isWorkRunning = async ($: $): Promise<boolean> => {
+  try {
+    return (await $.agent.list()).some(agent => agent.status === 'running' || agent.status === 'pending')
+  } catch {
+    return false
+  }
+}
+
+// The last sign of life: a turn ending, or any tool call, subagents' included.
+const quietSince = (pilot: NightshiftPilot): number => Math.max(pilot.lastTurnEndAt, pilot.lastActivityAt)
+
 const showStatus = async ($: $): Promise<void> => {
   const pilot = await getPilot($)
   if (!pilot.isOn) return $.ui.status(undefined)
   if (pilot.isGoalDone) return $.ui.status('nightshift: goal done')
   if (pilot.isTurnRunning) return $.ui.status('nightshift on')
 
-  const left = pilot.lastTurnEndAt + pilot.everyMs - (await $.clock.now())
-  $.ui.status(`nightshift on · check-in in ${minutes(left)}`)
+  $.ui.status('nightshift on · watching')
+}
+
+// Remembered per session, so nightshift stays on when the session restarts.
+const remember = async ($: $, pilot: NightshiftPilot | undefined): Promise<void> => {
+  const session = await $.session.id()
+  const held = await $.store.get('sessions')
+  const all = (held && typeof held === 'object' ? held : {}) as Record<string, { goal: string; everyMs: number; at: number }>
+  const now = await $.clock.now()
+  const kept = Object.fromEntries(Object.entries(all).filter(([id, row]) => id !== session && now - row.at < 7 * 86_400_000))
+  await $.store.set('sessions', pilot ? { ...kept, [session]: { goal: pilot.goal, everyMs: pilot.everyMs, at: now } } : kept)
 }
 
 const tick = async ($: $, stallMs: number): Promise<void> => {
@@ -153,11 +174,14 @@ const tick = async ($: $, stallMs: number): Promise<void> => {
     return showStatus($)
   }
 
-  if (!pilot.isTurnRunning && now - pilot.lastTurnEndAt >= pilot.everyMs) {
+  // Check in only when nothing at all has happened for the whole interval: no turn, no tool
+  // call from any agent. A session whose agents are busy is left alone.
+  const quietMs = now - quietSince(pilot)
+  if (!pilot.isTurnRunning && quietMs >= pilot.everyMs) {
     // Stamp now so a slow start doesn't fire a second check.
     await patchPilot($, { lastTurnEndAt: now })
-    await log($, 'check', `idle ${minutes(now - pilot.lastTurnEndAt)}`)
-    void $.prompt.submit({ text: checkText(pilot.goal, now - pilot.lastTurnEndAt) })
+    await log($, 'check', `nothing happened for ${minutes(quietMs)}`)
+    void $.prompt.submit({ text: checkText(pilot.goal, quietMs) })
   }
 
   return showStatus($)
@@ -178,6 +202,16 @@ export const register: Register = (on, options) => {
       immediate: true,
     })
     $.clock.every(60_000, () => void tick($, stallMs))
+
+    // A restarted session picks up where it left off.
+    const pilot = await getPilot($)
+    const held = (await $.store.get('sessions')) as Record<string, { goal: string; everyMs: number }> | undefined
+    const saved = held?.[await $.session.id()]
+    if (!pilot.isOn && saved) {
+      const now = await $.clock.now()
+      await patchPilot($, { isOn: true, goal: saved.goal, everyMs: saved.everyMs, lastTurnEndAt: now, lastActivityAt: now })
+      await log($, 'on', 'back on after a restart')
+    }
     await showStatus($)
 
     return next(e)
@@ -201,6 +235,7 @@ export const register: Register = (on, options) => {
 
     if (parsed.kind === 'off') {
       await patchPilot($, { isOn: false })
+      await remember($, undefined)
       await log($, 'off', '')
       await showStatus($)
       return { text: 'Nightshift off.', context: ['Nightshift is off: the owner is back. Ask them what you need to.'] }
@@ -249,6 +284,7 @@ export const register: Register = (on, options) => {
       lastTurnEndAt: pilot.isTurnRunning ? pilot.lastTurnEndAt : now,
       lastActivityAt: now,
     })
+    await remember($, next)
     await log($, 'on', `every ${minutes(everyMs)}: ${goal.slice(0, 200)}`)
     await showStatus($)
 
@@ -330,23 +366,31 @@ export const register: Register = (on, options) => {
       return { decision: 'deny', reason: 'Nightshift is on: nobody can approve a plan. Skip plan mode and do the work.' }
     }
 
-    const verdict = await next(e)
-    if (verdict.decision !== 'ask') return verdict
+    return next(e)
+  }).catch(($, e, next) => next(e))
 
-    const call = describeCall(e.tool, e.input)
+  // Only a prompt that would really wait for the owner gets here: rules and auto mode's own
+  // classifier have already had their say.
+  on('classic.PermissionRequest', async ($, e, next) => {
+    const pilot = await getPilot($)
+    if (!pilot.isOn) return next(e)
+
+    const call = describeCall(e.tool_name, e.tool_input)
     const rule = neverRule(call, extraDeny)
-    const risk = rule ? 'risky' : FILE_TOOLS.has(e.tool) ? 'safe' : await classify($, riskText(call), RISK_LABELS)
+    const risk = rule ? 'risky' : FILE_TOOLS.has(e.tool_name) ? 'safe' : await classify($, riskText(call), RISK_LABELS)
 
-    if (risk === 'risky' || verdict.ceiling === 'ask') {
+    if (risk === 'risky') {
       await log($, 'deny', call)
       return {
-        decision: 'deny',
-        reason: `Nightshift refused this because it looks destructive or outward-facing${rule ? ` (matches ${rule.source})` : ''}, and the owner is away. Find a safer way to do it, or set it aside for the owner, note it, and keep going with the rest.`,
+        decision: {
+          behavior: 'deny',
+          message: `Nightshift refused this because it looks destructive or outward-facing${rule ? ` (matches ${rule.source})` : ''}, and the owner is away. Find a safer way to do it, or set it aside for the owner, note it, and keep going with the rest.`,
+        },
       }
     }
 
     await log($, 'allow', call)
-    return { decision: 'allow', reason: 'Approved by nightshift while the owner is away.' }
+    return { decision: { behavior: 'allow' } }
   }).catch(($, e, next) => next(e))
 
   on('turn.complete', async ($, e, next) => {
@@ -368,7 +412,7 @@ export const register: Register = (on, options) => {
     if (e.reason !== 'answer') return done
 
     const ending = ((await classify($, endingText(e.answer), ENDING_LABELS)) ?? guessEnding(e.answer)) as Ending
-    const step = afterTurn({ ending, ...pilot, maxReviews })
+    const step = afterTurn({ ending, ...pilot, maxReviews, isWorkRunning: await isWorkRunning($) })
     await patchPilot($, { nudgesInRow: step.nudgesInRow })
 
     if (step.action === 'review') {
@@ -386,10 +430,6 @@ export const register: Register = (on, options) => {
         await log($, 'review', `round ${round} failed: ${review.gaps.replace(/\s+/g, ' ')}`)
         void $.prompt.submit({ text: reviewText(review.gaps, round, reviewNotes) })
       }
-    }
-    if (step.action === 'done') {
-      await patchPilot($, { isGoalDone: true })
-      await log($, 'done', `done after ${pilot.reviewRounds} reviews; check-ins paused`)
     }
     if (step.action === 'hold') {
       await log($, 'nudge', `holding: ${pilot.nudgesInRow} nudges with no work done; next check-in will retry`)

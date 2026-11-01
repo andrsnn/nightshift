@@ -75,8 +75,8 @@
     <text x="165" y="503" fill="#fff" text-anchor="middle" font-weight="600">Permission prompt</text>
     <text x="165" y="522" fill="#aab2d8" font-size="12" text-anchor="middle">safe: approved · risky: refused</text>
     <rect x="315" y="480" width="250" height="56" rx="10" fill="#22285e" stroke="#46509a"/>
-    <text x="440" y="503" fill="#fff" text-anchor="middle" font-weight="600">Idle for 15 minutes</text>
-    <text x="440" y="522" fill="#aab2d8" font-size="12" text-anchor="middle">check in: what's stuck? carry on</text>
+    <text x="440" y="503" fill="#fff" text-anchor="middle" font-weight="600">Silent for 15 minutes</text>
+    <text x="440" y="522" fill="#aab2d8" font-size="12" text-anchor="middle">nothing at all: check in</text>
     <rect x="590" y="480" width="250" height="56" rx="10" fill="#22285e" stroke="#46509a"/>
     <text x="715" y="503" fill="#fff" text-anchor="middle" font-weight="600">Stuck for 30 minutes</text>
     <text x="715" y="522" fill="#aab2d8" font-size="12" text-anchor="middle">stop the turn, try another way</text>

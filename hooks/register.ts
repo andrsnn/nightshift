@@ -149,10 +149,34 @@ const checkText = (goal: string, idleMs: number): string =>
 const stallText = (stallMs: number): string =>
   `${NUDGE_MARK} your last turn sat for ${minutes(stallMs)} with no progress (most likely a prompt or a hung command), so nightshift stopped it. Don't run the same thing the same way again: use non-interactive flags, a timeout, or a background run, or take another route. Then keep going on the goal.`
 
-// Goal from the conversation when `/nightshift` is run without one.
+// The goals still open in Claude's latest status update: a "GOALS" heading followed by lines like
+// "G2 <the goal in the owner's words> - DOING". Finished and dropped goals are left out.
+export const openGoals = (text: string): string[] => {
+  const lines = text.split(/\r?\n/)
+  const at = lines.findIndex(line => line.trim() === 'GOALS')
+  if (at < 0) return []
+  lines.splice(0, at + 1)
+  const out: string[] = []
+  for (const raw of lines) {
+    const line = raw.trim()
+    if (!line) {
+      if (out.length) break
+      continue
+    }
+    const m = line.match(/^(G\d+)\s+(.+?)\s+[-\u2013\u2014]\s+(DOING|DONE|BLOCKED|PAUSED|DROPPED)\s*$/i)
+    if (!m) break
+    if (!/^(DONE|DROPPED)$/i.test(m[3] ?? '')) out.push(`${m[1]} ${m[2]} (${(m[3] ?? '').toUpperCase()})`)
+  }
+  return out
+}
+
+// Goal from the conversation when `/nightshift` is run without one: the open goals in Claude's latest status
+// update when there is one, otherwise the owner's first message; plus the owner's latest message either way.
 const goalFromConversation = async ($: $): Promise<string> => {
+  const all = await $.session.messages()
+  const status = [...all].reverse().find(row => row.role === 'assistant' && openGoals(row.text).length > 0)
   // Skip wrappers, slash commands and prompts any plugin sent (nightshift's own included).
-  const rows = (await $.session.messages()).filter(
+  const rows = all.filter(
     row =>
       row.role === 'user' &&
       row.text.trim() !== '' &&
@@ -163,6 +187,10 @@ const goalFromConversation = async ($: $): Promise<string> => {
   )
   const first = rows[0]?.text.trim().slice(0, 800) ?? ''
   const last = rows.length > 1 ? (rows[rows.length - 1]?.text.trim().slice(0, 600) ?? '') : ''
+  if (status) {
+    const goals = `Open goals:\n${openGoals(status.text).join('\n')}`.slice(0, 1500)
+    return last ? `${goals}\n(Latest from the owner: ${last})` : goals
+  }
 
   return last && last !== first ? `${first}\n(Latest from the owner: ${last})` : first
 }
@@ -327,13 +355,15 @@ export const register: Register = (on, options) => {
       }
     }
 
-    const goal = parsed.goal || pilot.goal || (await goalFromConversation($))
+    // A goal the owner typed is kept; one taken from the conversation is rebuilt, so it follows the latest status.
+    const goal = parsed.goal || (pilot.isGoalGiven ? pilot.goal : '') || (await goalFromConversation($)) || pilot.goal
     const everyMs = parsed.everyMinutes ? parsed.everyMinutes * 60_000 : everyDefaultMs
     const now = await $.clock.now()
     const hasConversation = (await $.session.messages()).length > 0
     const next = await patchPilot($, {
       isOn: true,
       goal,
+      isGoalGiven: Boolean(parsed.goal) || (Boolean(pilot.isGoalGiven) && goal === pilot.goal),
       everyMs,
       isGoalDone: false,
       nudgesInRow: 0,

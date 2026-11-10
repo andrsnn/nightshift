@@ -17,6 +17,8 @@ export type NightshiftPilot = {
   reviewRounds: number
   isGoalDone: boolean
   isAbortedByPilot: boolean
+  // true when the owner typed the goal after /nightshift; otherwise it is rebuilt from the conversation each time
+  isGoalGiven?: boolean
 }
 
 export type NightshiftLogEntry = {

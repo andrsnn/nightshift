@@ -2,6 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 import { DEFAULT_BUDGET, riskText, afterTurn, describeCall, guessEnding, parseReview, reviewPrompt, neverRule, parseArgs, parseExtraDeny } from '../hooks/judge'
+import { openGoals } from '../hooks/register'
 
 const engine = (on: On, classifyAs: string) => {
   mock.clock(on, { now: 1_000_000 })
@@ -171,4 +172,22 @@ test('bounds: the reviewer sends back open-ended loops', () => {
 test('clean-up: the reviewer flags leftovers and hand-offs', () => {
   expect(reviewPrompt('ship the feature', '')).toContain('Clean-up')
   expect(reviewPrompt('ship the feature', '')).toContain('stop and delete them now')
+})
+
+test('goal: the open goals from the latest status update', async () => {
+
+  const status = [
+    'Update: two films are filming.',
+    '',
+    'GOALS',
+    'G1 refine the director - DOING',
+    'G2 make a few movies - PAUSED',
+    'G3 fix the scroll - DONE',
+    'G4 a dropped idea - DROPPED',
+    '',
+    'WIP',
+    '- G1: refine the director',
+  ].join('\n')
+  expect(openGoals(status)).toEqual(['G1 refine the director (DOING)', 'G2 make a few movies (PAUSED)'])
+  expect(openGoals('no status here')).toEqual([])
 })

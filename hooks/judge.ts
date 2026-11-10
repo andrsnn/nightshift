@@ -145,6 +145,7 @@ export const reviewPrompt = (goal: string, notes: string, budget: string = DEFAU
     '6. Loose ends. A "still open" list, a "want me to...?", or a wait on a job that never got checked all mean not done.',
     `7. Money. The owner's budget: ${budget} Was money spent where a free option would have worked, or is any paid machine still running? Either is a gap.`,
     '8. Bounds. The owner wants bounded, smart tasks. Did any task or agent loop with no stated end, such as proof run after proof run or round after round of tuning? That is a gap: the next step is a bounded task with exact steps, one check, at most two tries and a time limit.',
+    '9. Clean-up. Is anything the agent or its helpers started still running with no use (dev servers, browsers, background jobs, watchers), or are their temp files left behind? Did the agent hand the owner a list of things to stop or delete instead of doing it itself? Either is a gap: the next step is to stop and delete them now.',
     '',
     'The owner told the agent to decide things itself rather than wait for them. Acting on its own recommendation instead of waiting for a pick or an OK is not a gap, and neither is anything only the owner could give (a password, a purchase, publishing).',
     ...(notes ? ['', `The owner's own notes on how to check work: ${notes}`] : []),

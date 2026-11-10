@@ -167,3 +167,8 @@ test('bounds: the reviewer sends back open-ended loops', () => {
   expect(reviewPrompt('ship the feature', '')).toContain('Bounds')
   expect(reviewPrompt('ship the feature', '')).toContain('at most two tries')
 })
+
+test('clean-up: the reviewer flags leftovers and hand-offs', () => {
+  expect(reviewPrompt('ship the feature', '')).toContain('Clean-up')
+  expect(reviewPrompt('ship the feature', '')).toContain('stop and delete them now')
+})

@@ -71,6 +71,7 @@ const rules = (goal: string): string =>
     '- Never stop to ask the owner something or wait for approval. Make the call yourself: pick what best serves the goal, prefer choices that can be undone, and keep going. Where you have a recommendation ("I\'d pick B"), take it.',
     `- ${WAIT_RULE}`,
     `- ${BOUND_RULE}`,
+    `- ${CLEANUP_RULE}`,
     `- ${costRule()}`,
     '- AskUserQuestion is switched off. Ending your turn with a question wastes the night.',
     '- Keep a short "Decisions I made" list in your final summary so the owner can check them in the morning.',
@@ -93,10 +94,14 @@ const WAIT_RULE =
 const BOUND_RULE =
   'Keep every task bounded. Before you start a task or brief a subagent, write down where it ends: the exact steps, the one check that proves it, at most two tries at that check, and a time limit (an hour at most). Then stop and report, done or not. No open-ended loops: no "run it until it passes", no proof run after proof run, no new tuning rounds past the stated end. If the check still fails after two tries, report what fails and move on to the next task. Pick the smallest task that moves the goal forward.'
 
+// Owner: "if you spin resources up its up to you to clean up after yourself not force someone else to."
+const CLEANUP_RULE =
+  'Clean up after yourself. Whatever you or your helper agents start, you stop: dev servers, browsers, background jobs, watchers, cloud machines, temp files and folders. Every task and subagent brief ends with "stop what you started and delete your temp files", and you check it was done. Before you report a task done, list what is still running from your work and stop anything no longer needed. Never hand the owner a list of processes to kill or files to delete: stop and delete them yourself, using their exact process IDs or paths.'
+
 const nudgeText = (ending: Ending, goal: string): string =>
   ending === 'needs-a-human'
     ? `${NUDGE_MARK} the owner can't help right now. Note what you need from them, then do every other part of the goal you can without it (${goal || 'see the task above'}). ${WAIT_RULE}`
-    : `${NUDGE_MARK} the owner asked you to work without them, so settle that yourself: choose what best serves the goal (${goal || 'see the task above'}), take your own recommendation where you made one, prefer choices that can be undone, add it to your "Decisions I made" list, and keep going. ${WAIT_RULE} ${BOUND_RULE}`
+    : `${NUDGE_MARK} the owner asked you to work without them, so settle that yourself: choose what best serves the goal (${goal || 'see the task above'}), take your own recommendation where you made one, prefer choices that can be undone, add it to your "Decisions I made" list, and keep going. ${WAIT_RULE} ${BOUND_RULE} ${CLEANUP_RULE}`
 
 // When the session leaves questions for the owner, a fork of it answers them as the owner would.
 const standInPrompt = (goal: string): string =>
@@ -117,7 +122,7 @@ const answersText = (answers: string): string =>
   [
     `${NUDGE_MARK} the owner wants these settled without them. Answers on their behalf:`,
     answers,
-    `Act on them now, add them to your "Decisions I made" list, and keep going. ${WAIT_RULE} ${BOUND_RULE} ${costRule()}`,
+    `Act on them now, add them to your "Decisions I made" list, and keep going. ${WAIT_RULE} ${BOUND_RULE} ${CLEANUP_RULE} ${costRule()}`,
   ].join('\n')
 
 const reviewText = (gaps: string, round: number, notes: string): string =>
@@ -136,8 +141,9 @@ const checkText = (goal: string, idleMs: number): string =>
     '1. Look for anything stuck: a question you asked, a decision you put off, a background job or agent that failed or hung, a script waiting on input. Settle it yourself.',
     `2. Look for anything open-ended: an agent or job looping on runs, retries or tuning with no stated end. Give it a bound now or stop it and take its report. ${BOUND_RULE}`,
     '3. Make sure no paid cloud machine (a RunPod pod or the like) is left running with nothing to do; shut down and delete any that are.',
-    '4. If work toward the goal is left, carry on with it now as bounded tasks.',
-    '5. If the goal is fully done, check it (run the tests or checks it calls for), then say it is done in one line with your "Decisions I made" list.',
+    `4. List the dev servers, browsers, background jobs and temp folders that you or your agents started (match by command line, port, path and start time). Stop and delete every one that is no longer needed, yourself. ${CLEANUP_RULE}`,
+    '5. If work toward the goal is left, carry on with it now as bounded tasks.',
+    '6. If the goal is fully done, check it (run the tests or checks it calls for), then say it is done in one line with your "Decisions I made" list.',
   ].join('\n')
 
 const stallText = (stallMs: number): string =>

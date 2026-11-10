@@ -162,3 +162,8 @@ test('money: the budget reaches the reviewer and the risk check', () => {
   expect(riskText('Bash: runpodctl create pod --gpuType "H100"')).toContain('$0.60')
   expect(riskText('Bash: x', 'never spend anything')).toContain('never spend anything')
 })
+
+test('bounds: the reviewer sends back open-ended loops', () => {
+  expect(reviewPrompt('ship the feature', '')).toContain('Bounds')
+  expect(reviewPrompt('ship the feature', '')).toContain('at most two tries')
+})

@@ -70,6 +70,7 @@ const rules = (goal: string): string =>
     `Goal: ${goal || '(the task the owner gave you in this conversation)'}`,
     '- Never stop to ask the owner something or wait for approval. Make the call yourself: pick what best serves the goal, prefer choices that can be undone, and keep going. Where you have a recommendation ("I\'d pick B"), take it.',
     `- ${WAIT_RULE}`,
+    `- ${BOUND_RULE}`,
     `- ${costRule()}`,
     '- AskUserQuestion is switched off. Ending your turn with a question wastes the night.',
     '- Keep a short "Decisions I made" list in your final summary so the owner can check them in the morning.',
@@ -88,10 +89,14 @@ const costRule = (): string => `Money: ${budget} When you choose, choose the che
 const WAIT_RULE =
   'Only four kinds of thing may wait for the owner: a password or login, spending beyond a budget the owner already set, making something public or sending it to other people, and deleting something that cannot be got back. Picking between options, approving a sample or draft, choosing a model or tool to test within the budget, and settling a design are yours to decide. A "needs your OK" list of anything else is not allowed.'
 
+// Owner: "keep it bounded ... make sure we work on bounded smart tasks." Every task and subagent brief has an end.
+const BOUND_RULE =
+  'Keep every task bounded. Before you start a task or brief a subagent, write down where it ends: the exact steps, the one check that proves it, at most two tries at that check, and a time limit (an hour at most). Then stop and report, done or not. No open-ended loops: no "run it until it passes", no proof run after proof run, no new tuning rounds past the stated end. If the check still fails after two tries, report what fails and move on to the next task. Pick the smallest task that moves the goal forward.'
+
 const nudgeText = (ending: Ending, goal: string): string =>
   ending === 'needs-a-human'
     ? `${NUDGE_MARK} the owner can't help right now. Note what you need from them, then do every other part of the goal you can without it (${goal || 'see the task above'}). ${WAIT_RULE}`
-    : `${NUDGE_MARK} the owner asked you to work without them, so settle that yourself: choose what best serves the goal (${goal || 'see the task above'}), take your own recommendation where you made one, prefer choices that can be undone, add it to your "Decisions I made" list, and keep going. ${WAIT_RULE}`
+    : `${NUDGE_MARK} the owner asked you to work without them, so settle that yourself: choose what best serves the goal (${goal || 'see the task above'}), take your own recommendation where you made one, prefer choices that can be undone, add it to your "Decisions I made" list, and keep going. ${WAIT_RULE} ${BOUND_RULE}`
 
 // When the session leaves questions for the owner, a fork of it answers them as the owner would.
 const standInPrompt = (goal: string): string =>
@@ -112,14 +117,15 @@ const answersText = (answers: string): string =>
   [
     `${NUDGE_MARK} the owner wants these settled without them. Answers on their behalf:`,
     answers,
-    `Act on them now, add them to your "Decisions I made" list, and keep going. ${WAIT_RULE} ${costRule()}`,
+    `Act on them now, add them to your "Decisions I made" list, and keep going. ${WAIT_RULE} ${BOUND_RULE} ${costRule()}`,
   ].join('\n')
 
 const reviewText = (gaps: string, round: number, notes: string): string =>
   [
     `${NUDGE_MARK} not done yet. A strict review against the owner's goal (round ${round}) sent it back with these gaps:`,
     gaps,
-    'Close them, most important first. Look at the real output each time (run it, open it, screenshot it and put it next to the reference) and keep improving until it meets the goal, not just until it works. Do the whole thing, not a sample, and end with proof: what you looked at and a met / not met list against the goal.',
+    'Close them, most important first, each as its own bounded task. Look at the real output each time (run it, open it, screenshot it and put it next to the reference). Do the whole thing, not a sample, and end with proof: what you looked at and a met / not met list against the goal.',
+    BOUND_RULE,
     ...(notes ? [`How the owner checks work: ${notes}`] : []),
   ].join('\n')
 
@@ -128,9 +134,10 @@ const checkText = (goal: string, idleMs: number): string =>
     `${CHECK_MARK}: the owner is still away and this session has been idle for ${minutes(idleMs)}.`,
     `Goal: ${goal || '(the task the owner gave you in this conversation)'}`,
     '1. Look for anything stuck: a question you asked, a decision you put off, a background job or agent that failed or hung, a script waiting on input. Settle it yourself.',
-    '2. Make sure no paid cloud machine (a RunPod pod or the like) is left running with nothing to do; shut down and delete any that are.',
-    '3. If work toward the goal is left, carry on with it now.',
-    '4. If the goal is fully done, check it (run the tests or checks it calls for), then say it is done in one line with your "Decisions I made" list.',
+    `2. Look for anything open-ended: an agent or job looping on runs, retries or tuning with no stated end. Give it a bound now or stop it and take its report. ${BOUND_RULE}`,
+    '3. Make sure no paid cloud machine (a RunPod pod or the like) is left running with nothing to do; shut down and delete any that are.',
+    '4. If work toward the goal is left, carry on with it now as bounded tasks.',
+    '5. If the goal is fully done, check it (run the tests or checks it calls for), then say it is done in one line with your "Decisions I made" list.',
   ].join('\n')
 
 const stallText = (stallMs: number): string =>

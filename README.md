@@ -1,18 +1,24 @@
-<img src="docs/icon.svg" width="72" align="right" alt="">
+
+<img src="docs/icon.svg" width="96" height="96" align="right" alt="nightshift icon">
 
 # nightshift
 
-You tell Claude Code to work on its own and go to bed. When you wake up, it has spent the night waiting on a question it could have answered itself. Or it's stuck on a permission prompt. Or it said "done" at 1 a.m. with half the job left.
+nightshift is a Claude Code plugin that keeps a session working while you're away.
 
-nightshift is a Claude Code plugin that keeps the session working while you're away.
+You tell Claude Code to work on its own and go to bed. When you wake up, it has spent the night waiting on a question it could have answered itself. Or it's stuck on a permission prompt. Or it said "done" at 1 a.m. with half the job left. nightshift handles all three.
 
 ```
 /nightshift build the level editor, matching the mocks in docs/mocks
 ```
 
-![What nightshift does when Claude ends a turn](docs/flow.svg)
+![You go away, Claude works, nightshift handles each stop, Claude keeps going](docs/loop.svg)
 
 ## What it does
+
+![The seven things nightshift does](docs/features.svg)
+
+<details>
+<summary>The details, one by one</summary>
 
 - **Answers its own questions.** If Claude ends a turn asking you something, nightshift sends it back: nobody will answer, so make the call, write it down, and keep going. The question tool is switched off while it runs.
 - **Keeps every task bounded.** Each task, and each helper agent Claude starts, gets a clear end: the steps, one check, at most two tries and a time limit. Then it reports, done or not. Check-ins catch any agent that keeps rerunning the same thing, and the reviewer sends open-ended loops back.
@@ -24,6 +30,14 @@ nightshift is a Claude Code plugin that keeps the session working while you're a
 - **Checks in.** If nothing at all happens for 15 minutes (no turn, no tool call from any agent), it asks Claude what's stuck and gets it moving again.
 - **Restarts stuck turns.** A turn with no activity for 30 minutes is stopped, and Claude is told to try another way.
 - **Keeps a log** of everything it approved, refused and sent back, for the morning.
+
+</details>
+
+The full path of one turn, from the moment Claude stops:
+
+![What nightshift does when Claude ends a turn](docs/flow.svg)
+
+Here is a real log:
 
 ![A real nightshift log](docs/log.svg)
 
@@ -61,14 +75,14 @@ The status line shows `nightshift on` while it runs, and `nightshift: goal done`
 
 Change these in `/config` under nightshift.
 
-| Setting | Default | |
-|---|---|---|
-| Check-in interval | 15 minutes | How long the session may sit idle before a check-in. |
-| Stall limit | 30 minutes | How long a turn may go with no activity before it's restarted. |
-| Strict reviews per goal | 5 | How many times a "done" gets sent back before nightshift accepts it. |
-| How you check work | empty | Your own bar, given to the reviewer. For example: "screenshot every screen and compare with the mock; run the game; read the copy out loud." |
-| Money rules | free first; cloud GPUs at most $0.60/h, shut down after each run | What Claude may spend while you're away. |
-| Extra deny patterns | empty | Regular expressions for commands it must never approve, separated by `;;`. |
+| Setting | Name | Default | What it does |
+|---|---|---|---|
+| Check-in interval | `everyMinutes` | 15 | Minutes the session may sit idle before a check-in. |
+| Stall limit | `stallMinutes` | 30 | Minutes a turn may go with no activity before it's restarted. |
+| Strict reviews per goal | `maxReviews` | 5 | How many times a "done" gets sent back before nightshift accepts it. |
+| How you check work | `reviewNotes` | empty | Your own bar, given to the reviewer. For example: "screenshot every screen and compare with the mock; run the game; read the copy out loud." |
+| Money rules | `budget` | free first; cloud GPUs at most $0.60/h, shut down after each run | What Claude may spend while you're away. |
+| Extra deny patterns | `extraDeny` | empty | Regular expressions for commands it must never approve, separated by `;;`. |
 
 ## Where the reviewer's checks come from
 

@@ -75,6 +75,7 @@ const rules = (goal: string): string =>
     `- ${costRule()}`,
     '- AskUserQuestion is switched off. Ending your turn with a question wastes the night.',
     '- Keep a short "Decisions I made" list in your final summary so the owner can check them in the morning.',
+    `- ${STATUS_RULE}`,
     '- If one item truly needs the owner, note it and do all the other work you can, in parallel where you can (background tasks, subagents).',
     '- Run scripts so they never wait on the keyboard: --yes style flags, CI=1, timeouts, background runs for long jobs.',
     '- Permission prompts are answered for you: safe local steps are approved, destructive or outward-facing ones are refused. When one is refused, find a safer way or set it aside, and keep going.',
@@ -93,6 +94,11 @@ const WAIT_RULE =
 // Owner: "keep it bounded ... make sure we work on bounded smart tasks." Every task and subagent brief has an end.
 const BOUND_RULE =
   'Keep every task bounded. Before you start a task or brief a subagent, write down where it ends: the exact steps, the one check that proves it, at most two tries at that check, and a time limit (an hour at most). Then stop and report, done or not. No open-ended loops: no "run it until it passes", no proof run after proof run, no new tuning rounds past the stated end. If the check still fails after two tries, report what fails and move on to the next task. Pick the smallest task that moves the goal forward.'
+
+// Status messages in one shape, so the owner can scan them and nightshift can read the open goals back out
+// of the latest one (see openGoals). The skill ships with this plugin as nightshift:status-update.
+const STATUS_RULE =
+  'Write every progress or status message with the nightshift:status-update skill: Update, then GOALS (every goal the owner asked for, in their words, each marked DOING, DONE, BLOCKED, PAUSED or DROPPED), then WIP, DONE, ISSUES and NEED ME. Nightshift reads the GOALS list from your latest update to keep its goal current.'
 
 // Owner: "if you spin resources up its up to you to clean up after yourself not force someone else to."
 const CLEANUP_RULE =

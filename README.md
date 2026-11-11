@@ -64,9 +64,12 @@ nightshift is built on Claude Code's function-hooks plugin API, which is in earl
 |---|---|
 | `/nightshift <goal>` | Turn it on. With no goal, it uses what you asked for earlier in the conversation. |
 | `/nightshift 10m <goal>` | Turn it on and check in after 10 idle minutes instead of 15. |
+| `/nightshift force <goal>` | Turn it on so only you can turn it off. Claude can't turn it off, even when the goals are done. |
 | `/nightshift status` | Show whether it's on, idle or working. |
 | `/nightshift log` | Show what it approved, refused and sent back. |
 | `/nightshift off` | Turn it off. Typing anything yourself also resets its counters. |
+
+When every goal is done and checked, Claude turns nightshift off itself, unless you forced it on.
 
 It stays on when the session restarts.
 
@@ -83,6 +86,7 @@ Change these in `/config` under nightshift.
 | Strict reviews per goal | `maxReviews` | 5 | How many times a "done" gets sent back before nightshift accepts it. |
 | How you check work | `reviewNotes` | empty | Your own bar, given to the reviewer. For example: "screenshot every screen and compare with the mock; run the game; read the copy out loud." |
 | Money rules | `budget` | free first; cloud GPUs at most $0.60/h, shut down after each run | What Claude may spend while you're away. |
+| Always force on | `force` | off | Every `/nightshift` starts forced on, so only you can turn it off. |
 | Extra deny patterns | `extraDeny` | empty | Regular expressions for commands it must never approve, separated by `;;`. |
 
 ## Where the reviewer's checks come from

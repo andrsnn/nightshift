@@ -172,10 +172,17 @@ export type Parsed =
   | { kind: 'status' }
   | { kind: 'log' }
   | { kind: 'help' }
-  | { kind: 'on'; goal: string; everyMinutes?: number }
+  | { kind: 'on'; goal: string; everyMinutes?: number; isForced?: boolean }
 
 export const parseArgs = (args: string): Parsed => {
   const text = args.trim()
+
+  // `force` first: only the owner can turn it off.
+  const force = /^force\b\s*/i.exec(text)
+  if (force !== null) {
+    const rest = parseArgs(text.slice(force[0].length))
+    return rest.kind === 'on' ? { ...rest, isForced: true } : { kind: 'on', goal: '', isForced: true }
+  }
   const word = text.toLowerCase()
 
   if (word === 'off' || word === 'stop') return { kind: 'off' }

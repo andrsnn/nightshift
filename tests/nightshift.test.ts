@@ -17,6 +17,7 @@ const engine = (on: On, classifyAs: string) => {
   // Core would put every call here to the person.
   on('tool.check', () => ({ decision: 'ask' }))
   on('agent.list', () => ({ value: [] }))
+  on('tool.register', (_, e) => ({ value: { tool: `mcp__nightshift__${e.name}` } }))
 }
 
 // `$.command.run` as the person's Enter would raise it.
@@ -208,6 +209,7 @@ test('after a turn ends, nightshift waits 15 quiet minutes before it says anythi
     return { text: e.text }
   })
   on('agent.list', () => ({ value: [] }))
+  on('tool.register', (_, e) => ({ value: { tool: `mcp__nightshift__${e.name}` } }))
   on('turn.start', (_, e) => ({ turnId: e.turnId }))
   on('turn.complete', () => ({ text: '' }))
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
@@ -236,4 +238,42 @@ test('after a turn ends, nightshift waits 15 quiet minutes before it says anythi
   await turn('t3')
   await clock.advance(10 * 60_000)
   expect(sent).toEqual([])
+})
+
+test('arguments: force', () => {
+  expect(parseArgs('force')).toEqual({ kind: 'on', goal: '', isForced: true })
+  expect(parseArgs('force 10m ship it')).toEqual({ kind: 'on', goal: 'ship it', everyMinutes: 10, isForced: true })
+  expect(parseArgs('Force ship it')).toEqual({ kind: 'on', goal: 'ship it', isForced: true })
+})
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const callOff = async ($: any): Promise<string> =>
+  String((await $.tool.call({ tool: 'mcp__nightshift__off', input: { done: 'parser done; tests and a run checked' } })).result)
+
+test('the agent turns nightshift off when the goals are done', async ($, on) => {
+  engine(on, 'safe')
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await run($, 'finish the parser')
+
+  expect(await callOff($)).toContain('Nightshift is off')
+  expect((await run($, 'status')).text).toBe('Nightshift is off.')
+})
+
+test('forced on: the agent cannot turn it off, the owner can', async ($, on) => {
+  engine(on, 'safe')
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  expect((await run($, 'force finish the parser')).text).toContain('forced')
+
+  expect(await callOff($)).toContain('stays on')
+  expect((await run($, 'status')).text).toContain('Forced on')
+  await run($, 'off')
+  expect((await run($, 'status')).text).toBe('Nightshift is off.')
+})
+
+test('the force setting forces every /nightshift on', { options: { force: true } }, async ($, on) => {
+  engine(on, 'safe')
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await run($, 'finish the parser')
+
+  expect(await callOff($)).toContain('stays on')
 })

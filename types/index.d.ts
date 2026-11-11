@@ -21,6 +21,8 @@ export type NightshiftPilot = {
   isGoalGiven?: boolean
   // The last answer, held until the session has been quiet for the check-in interval. Empty when nothing waits.
   pendingAnswer: string
+  // The owner forced it on: the agent's off tool is refused; only the owner can turn it off.
+  isForced?: boolean
 }
 
 export type NightshiftLogEntry = {

@@ -1,6 +1,6 @@
 {
   "name": "nightshift",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "description": "Keeps a Claude Code session working while you're away: answers its own questions, settles permission prompts, and checks in every 15 minutes.",
   "author": {
     "name": "andrsnn"
@@ -36,6 +36,12 @@
       "title": "Money rules",
       "description": "What Claude may spend while you're away. Empty uses the default: free options first; cloud GPUs only when nothing free works, at most $0.60 an hour, no storage volumes, shut down right after each run.",
       "default": ""
+    },
+    "force": {
+      "type": "boolean",
+      "title": "Always force on",
+      "description": "Claude can't turn nightshift off, even when every goal is done. Only you can, with /nightshift off. Same as starting it with /nightshift force.",
+      "default": false
     },
     "extraDeny": {
       "type": "string",

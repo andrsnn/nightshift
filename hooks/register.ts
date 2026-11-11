@@ -65,7 +65,14 @@ const log = async ($: $, kind: NightshiftLogEntry['kind'], text: string): Promis
   await $.store.set('log', [...list, { at, session, kind, text: text.slice(0, 300) }].slice(-LOG_KEEP))
 }
 
-const rules = (goal: string): string =>
+const OFF_TOOL = 'mcp__nightshift__off'
+
+const offRule = (isForced: boolean): string =>
+  isForced
+    ? 'The owner forced nightshift on, so it stays on until they turn it off. Keep going on the goal.'
+    : `When every goal is done and checked, call the ${OFF_TOOL} tool to turn nightshift off, then give your final summary. Don't call it while any goal is still open.`
+
+const rules = (goal: string, isForced = false): string =>
   [
     'Nightshift is on. The owner is away, probably asleep, and asked you to work on your own until the goal is met.',
     `Goal: ${goal || '(the task the owner gave you in this conversation)'}`,
@@ -82,6 +89,7 @@ const rules = (goal: string): string =>
     '- Permission prompts are answered for you: safe local steps are approved, destructive or outward-facing ones are refused. When one is refused, find a safer way or set it aside, and keep going.',
     '- Before you say done, check it yourself: every part of the goal met (not a sample), the real output looked at this turn (screenshots for anything visual; tests alone are not looking), held up against any mock or reference, and no "still open" list. A strict review will check the same and send it back if it falls short.',
     '- End your turn only when the goal is done and checked, or when everything left needs the owner.',
+    `- ${offRule(isForced)}`,
   ].join('\n')
 
 // The only things that may wait for the owner. Everything else gets decided.
@@ -245,7 +253,23 @@ const remember = async ($: $, pilot: NightshiftPilot | undefined): Promise<void>
   const all = (held && typeof held === 'object' ? held : {}) as Record<string, { goal: string; everyMs: number; at: number }>
   const now = await $.clock.now()
   const kept = Object.fromEntries(Object.entries(all).filter(([id, row]) => id !== session && now - row.at < 7 * 86_400_000))
-  await $.store.set('sessions', pilot ? { ...kept, [session]: { goal: pilot.goal, everyMs: pilot.everyMs, at: now } } : kept)
+  const row = pilot ? { goal: pilot.goal, everyMs: pilot.everyMs, isForced: Boolean(pilot.isForced), at: now } : undefined
+  await $.store.set('sessions', row ? { ...kept, [session]: row } : kept)
+}
+
+// The agent's own off switch, refused while the owner has forced nightshift on.
+const turnOffByAgent = async ($: $, done: string): Promise<string> => {
+  const pilot = await getPilot($)
+  if (!pilot.isOn) return 'Nightshift is already off.'
+  if (pilot.isForced) {
+    await log($, 'deny', `off tool refused (forced on): ${done}`)
+    return 'Nightshift stays on: the owner forced it on, and only they can turn it off. Keep going on the goal.'
+  }
+  await patchPilot($, { isOn: false, pendingAnswer: '' })
+  await remember($, undefined)
+  await log($, 'off', `by the agent: ${done}`)
+  await showStatus($)
+  return 'Nightshift is off. In your final message, list each goal and how you checked it is done.'
 }
 
 // Sends only while the session is still quiet: the owner may have typed during a slow review.
@@ -347,6 +371,8 @@ export const register: Register = (on, options) => {
   maxReviews = Math.max(0, Number(options.maxReviews ?? 5))
   reviewNotes = String(options.reviewNotes ?? '').trim()
   budget = String(options.budget ?? '').trim() || DEFAULT_BUDGET
+  // The owner's setting: every /nightshift is forced on.
+  const forceSetting = options.force === true
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -355,15 +381,26 @@ export const register: Register = (on, options) => {
       argumentHint: '[off|status|log|<minutes>m] [goal]',
       immediate: true,
     })
+    // Without the tool nightshift still runs; the agent just can't turn it off.
+    await $.tool.register({
+      name: 'off',
+      description:
+        'Turns nightshift off. Call it only when nightshift is on and every goal is done and checked. Refused when the owner forced nightshift on.',
+      inputSchema: {
+        type: 'object',
+        properties: { done: { type: 'string', description: 'Each goal, and how you checked it is done.' } },
+        required: ['done'],
+      },
+    }).catch(() => undefined)
     $.clock.every(60_000, () => void tick($, stallMs))
 
     // A restarted session picks up where it left off.
     const pilot = await getPilot($)
-    const held = (await $.store.get('sessions')) as Record<string, { goal: string; everyMs: number }> | undefined
+    const held = (await $.store.get('sessions')) as Record<string, { goal: string; everyMs: number; isForced?: boolean }> | undefined
     const saved = held?.[await $.session.id()]
     if (!pilot.isOn && saved) {
       const now = await $.clock.now()
-      await patchPilot($, { isOn: true, goal: saved.goal, everyMs: saved.everyMs, lastTurnEndAt: now, lastActivityAt: now })
+      await patchPilot($, { isOn: true, goal: saved.goal, everyMs: saved.everyMs, isForced: Boolean(saved.isForced), lastTurnEndAt: now, lastActivityAt: now })
       await log($, 'on', 'back on after a restart')
     }
     await showStatus($)
@@ -380,6 +417,7 @@ export const register: Register = (on, options) => {
         text: [
           '/nightshift [goal]        turn on; the goal defaults to what you asked earlier',
           '/nightshift 10m [goal]    turn on with a 10-minute check-in',
+          '/nightshift force [goal]  turn on so only you can turn it off',
           '/nightshift status        what it is doing',
           '/nightshift log           what it approved, refused and nudged',
           '/nightshift off           turn off',
@@ -388,7 +426,7 @@ export const register: Register = (on, options) => {
     }
 
     if (parsed.kind === 'off') {
-      await patchPilot($, { isOn: false })
+      await patchPilot($, { isOn: false, isForced: false, pendingAnswer: '' })
       await remember($, undefined)
       await log($, 'off', '')
       await showStatus($)
@@ -402,6 +440,7 @@ export const register: Register = (on, options) => {
         text: [
           pilot.isGoalDone ? 'Nightshift on: goal reported done; check-ins paused.' : 'Nightshift on.',
           `Goal: ${pilot.goal || '(from the conversation)'}`,
+          pilot.isForced ? 'Forced on: only you can turn it off.' : 'Claude can turn it off when every goal is done.',
           pilot.isTurnRunning
             ? `Working; last activity ${minutes(now - pilot.lastActivityAt)} ago.`
             : `Idle ${minutes(now - pilot.lastTurnEndAt)}; checks in after ${minutes(pilot.everyMs)} idle.`,
@@ -429,8 +468,10 @@ export const register: Register = (on, options) => {
     const everyMs = parsed.everyMinutes ? parsed.everyMinutes * 60_000 : everyDefaultMs
     const now = await $.clock.now()
     const hasConversation = (await $.session.messages()).length > 0
+    const isForced = Boolean(parsed.isForced) || forceSetting
     const next = await patchPilot($, {
       isOn: true,
+      isForced,
       goal,
       isGoalGiven: Boolean(parsed.goal) || (Boolean(pilot.isGoalGiven) && goal === pilot.goal),
       everyMs,
@@ -454,7 +495,7 @@ export const register: Register = (on, options) => {
     }
 
     return {
-      text: `Nightshift on. Check-ins after ${minutes(everyMs)} idle; /nightshift off to stop.\nGoal: ${goal || '(none found; it will use the conversation)'}`,
+      text: `Nightshift on${isForced ? ' (forced: only you can turn it off)' : ''}. Check-ins after ${minutes(everyMs)} idle; /nightshift off to stop.\nGoal: ${goal || '(none found; it will use the conversation)'}`,
     }
   })
 
@@ -464,7 +505,7 @@ export const register: Register = (on, options) => {
     if (!pilot.isOn) return composed
 
     return {
-      sections: [...composed.sections, { id: 'nightshift:rules', text: rules(pilot.goal), scope: 'session' }],
+      sections: [...composed.sections, { id: 'nightshift:rules', text: rules(pilot.goal, Boolean(pilot.isForced)), scope: 'session' }],
     }
   })
 
@@ -497,6 +538,10 @@ export const register: Register = (on, options) => {
   })
 
   on('tool.call', async ($, e, next) => {
+    if (e.tool === OFF_TOOL) {
+      const input = e.input as { done?: unknown } | undefined
+      return { result: await turnOffByAgent($, String(input?.done ?? '')) }
+    }
     const pilot = await getPilot($)
     if (pilot.isOn) {
       await patchPilot($, {
@@ -509,6 +554,8 @@ export const register: Register = (on, options) => {
   })
 
   on('tool.check', async ($, e, next) => {
+    // Turning nightshift off is the session's own business: never a prompt.
+    if (e.tool === OFF_TOOL) return { decision: 'allow' }
     const pilot = await getPilot($)
     if (!pilot.isOn) return next(e)
 

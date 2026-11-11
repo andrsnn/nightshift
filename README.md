@@ -30,7 +30,7 @@ You tell Claude Code to work on its own and go to bed. When you wake up, it has 
 - **Checks in.** If nothing at all happens for 15 minutes (no turn, no tool call from any agent), it asks Claude what's stuck and gets it moving again.
 - **Restarts stuck turns.** A turn with no activity for 30 minutes is stopped, and Claude is told to try another way.
 - **Keeps a log** of everything it approved, refused and sent back, for the morning.
-- **Follows your goals as they change.** Run `/nightshift` with no goal and it takes the open goals (G1, G2...) from Claude's latest status update. It ships a status-update skill so those updates always have that shape, with nothing else to install.
+- **Follows your goals as they change.** Run `/nightshift` with no goal and it takes the open goals (G1, G2...) from the project's STATUS.md when Claude updated it after its latest status message, and from that message otherwise. Finished goals are left out. If you asked for more after that list was made, your newest messages are added too. It ships a status-update skill so those updates always have that shape, with nothing else to install.
 
 </details>
 

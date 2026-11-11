@@ -187,29 +187,134 @@ export const openGoals = (text: string): string[] => {
   return out
 }
 
-// Goal from the conversation when `/nightshift` is run without one: the open goals in Claude's latest status
-// update when there is one, otherwise the owner's first message; plus the owner's latest message either way.
-const goalFromConversation = async ($: $): Promise<string> => {
-  const all = await $.session.messages()
-  const status = [...all].reverse().find(row => row.role === 'assistant' && openGoals(row.text).length > 0)
-  // Skip wrappers, slash commands and prompts any plugin sent (nightshift's own included).
-  const rows = all.filter(
-    row =>
-      row.role === 'user' &&
-      row.text.trim() !== '' &&
-      !/^\s*[</]/.test(row.text) &&
-      !/plugin sent a message/i.test(row.text) &&
-      !row.text.includes(NUDGE_MARK) &&
-      !row.text.includes(CHECK_MARK),
-  )
-  const first = rows[0]?.text.trim().slice(0, 800) ?? ''
-  const last = rows.length > 1 ? (rows[rows.length - 1]?.text.trim().slice(0, 600) ?? '') : ''
-  if (status) {
-    const goals = `Open goals:\n${openGoals(status.text).join('\n')}`.slice(0, 1500)
-    return last ? `${goals}\n(Latest from the owner: ${last})` : goals
+const STATES = 'DOING|DONE|BLOCKED|PAUSED|DROPPED'
+
+// The goals still open in a project's STATUS.md. Its goal lines come in several shapes, and a goal may have
+// several lines (a later one marks it done):
+//   - G4 "the owner's words" - DOING: notes        G20 DONE (687953b): notes
+//   G1 | the goal | approved Nov 9 "words" | doing | ETA        - G21 owner, Nov 11: "words" (no state: open)
+// The goal's words come from its first line, its state from the latest line that gives one.
+// Returns undefined when the file has no goal lines at all.
+export const statusFileGoals = (text: string): string[] | undefined => {
+  const goals = new Map<string, { words: string; state: string }>()
+  for (const raw of text.split(/\r?\n/)) {
+    const m = raw.trim().replace(/^[-*]\s*/, '').match(/^(G\d+)\b\s*(.*)$/)
+    if (!m) continue
+    const id = m[1] ?? ''
+    let rest = (m[2] ?? '').replace(/^[:.]\s*/, '')
+    let state = ''
+    let words = rest
+    if (rest.startsWith('|')) rest = rest.slice(1)
+    if (rest.includes('|')) {
+      const cells = rest.split('|').map(cell => cell.trim())
+      words = cells[0] ?? ''
+      state = cells.slice(1).find(cell => new RegExp(`^(${STATES})\\b`, 'i').test(cell))?.match(new RegExp(STATES, 'i'))?.[0] ?? ''
+    } else {
+      const lead = rest.match(new RegExp(`^(${STATES})\\b`, 'i'))
+      const mid = rest.match(new RegExp(`\\s[-\\u2013\\u2014]\\s+(${STATES})\\b`, 'i'))
+      if (lead) {
+        state = lead[1] ?? ''
+        words = ''
+      } else if (mid) {
+        state = mid[1] ?? ''
+        words = rest.slice(0, mid.index)
+      }
+    }
+    const held = goals.get(id)
+    goals.set(id, {
+      words: held?.words || words.trim().slice(0, 300),
+      state: state ? state.toUpperCase() : (held?.state ?? ''),
+    })
+  }
+  if (goals.size === 0) return undefined
+
+  return [...goals]
+    .filter(([, goal]) => !/^(DONE|DROPPED)$/.test(goal.state))
+    .map(([id, goal]) => `${id} ${goal.words || '(see STATUS.md)'} (${goal.state || 'OPEN'})`)
+}
+
+// Text the owner typed, or '' for what only looks like it: wrappers, slash commands, system reminders,
+// compaction summaries, and prompts any plugin sent (nightshift's own included).
+const ownerText = (text: string): string => {
+  const clean = text.replace(/<system-reminder>[\s\S]*?(<\/system-reminder>|$)/g, '').trim()
+  if (!clean || /^[</]/.test(clean)) return ''
+  if (/^This session is being continued from a previous conversation/i.test(clean)) return ''
+  if (/^(Caveat: The messages below|\[Request interrupted)/i.test(clean)) return ''
+  if (/plugin sent a message/i.test(clean) || clean.includes(NUDGE_MARK) || clean.includes(CHECK_MARK)) return ''
+
+  return clean
+}
+
+const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit'])
+const STATUS_PATH = /(?:^|[\s'"`=>])((?:[A-Za-z]:)?[^\s'"`<>|;&]*STATUS\.md)\b/i
+
+// Where a tool call wrote a STATUS.md, if it did: a file tool's path, or a shell command that names one and writes.
+const statusFileWritten = (use: { tool: string; input: Record<string, unknown> }): string | undefined => {
+  if (WRITE_TOOLS.has(use.tool)) {
+    const path = String(use.input.file_path ?? use.input.notebook_path ?? '')
+    return /(^|[\\/])STATUS\.md$/i.test(path) ? path : undefined
+  }
+  if (use.tool !== 'Bash' && use.tool !== 'PowerShell') return undefined
+  const command = String(use.input.command ?? '')
+  if (!/(>|\btee\b|sed -i|Set-Content|Add-Content|Out-File|writeFile|\.write\()/.test(command)) return undefined
+
+  return command.match(STATUS_PATH)?.[1]
+}
+
+type Row = { role: 'user' | 'assistant'; text: string; toolUses?: readonly { tool: string; input: Record<string, unknown> }[] }
+
+// Goal from the conversation when `/nightshift` is run without one. Newest source first:
+// 1. the project's STATUS.md, when the session wrote it after its latest status update (or there is no update
+//    and the working folder has one), with DONE and DROPPED goals left out;
+// 2. otherwise the open goals in Claude's latest status update;
+// 3. otherwise the owner's first message.
+// Owner messages written after the goal list was made are added (up to the newest 5), and the list is marked
+// as maybe stale, so new asks are never lost.
+export const goalFrom = async (all: readonly Row[], read: (path: string) => Promise<string | undefined>, cwd: string): Promise<string> => {
+  const statusAt = all.findLastIndex(row => row.role === 'assistant' && openGoals(row.text).length > 0)
+  let fileAt = -1
+  let filePath = ''
+  all.forEach((row, at) => {
+    for (const use of row.toolUses ?? []) {
+      const path = statusFileWritten(use)
+      if (path) {
+        fileAt = at
+        filePath = path
+      }
+    }
+  })
+  if (!filePath && statusAt < 0 && cwd) filePath = `${cwd.replace(/[\\/]$/, '')}/STATUS.md`
+
+  const owner = all.map((row, at) => ({ at, text: row.role === 'user' ? ownerText(row.text) : '' })).filter(row => row.text)
+  const since = (at: number): string => {
+    const later = owner.filter(row => row.at > at).slice(-5)
+    if (later.length === 0) return ''
+    return `\nThe owner wrote after that list was made, so it may be stale:\n${later.map(row => `- ${row.text.slice(0, 300)}`).join('\n')}`
   }
 
-  return last && last !== first ? `${first}\n(Latest from the owner: ${last})` : first
+  if (filePath && fileAt >= statusAt) {
+    const text = await read(filePath)
+    const goals = text === undefined ? undefined : statusFileGoals(text)
+    if (goals) {
+      const list = goals.length ? `Open goals (from ${filePath}):\n${goals.join('\n')}` : `Every goal in ${filePath} is done.`
+      return `${list.slice(0, 2000)}${since(fileAt)}`
+    }
+  }
+  const status = all[statusAt]
+  if (status) return `${`Open goals:\n${openGoals(status.text).join('\n')}`.slice(0, 2000)}${since(statusAt)}`
+
+  const first = owner[0]
+  if (!first) return ''
+  const last = owner.length > 1 ? owner[owner.length - 1] : undefined
+  return last ? `${first.text.slice(0, 800)}\n(Latest from the owner: ${last.text.slice(0, 600)})` : first.text.slice(0, 800)
+}
+
+const goalFromConversation = async ($: $): Promise<string> => {
+  const [all, cwd] = await Promise.all([$.session.messages(), $.session.cwd().catch(() => '')])
+  const read = (path: string): Promise<string | undefined> =>
+    $.fs.read(path).then(text => (typeof text === 'string' ? text : undefined)).catch(() => undefined)
+
+  return goalFrom(all, read, cwd)
 }
 
 const classify = async ($: $, text: string, labels: readonly string[]): Promise<string | undefined> => {

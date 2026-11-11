@@ -19,6 +19,8 @@ export type NightshiftPilot = {
   isAbortedByPilot: boolean
   // true when the owner typed the goal after /nightshift; otherwise it is rebuilt from the conversation each time
   isGoalGiven?: boolean
+  // The last answer, held until the session has been quiet for the check-in interval. Empty when nothing waits.
+  pendingAnswer: string
 }
 
 export type NightshiftLogEntry = {

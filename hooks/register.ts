@@ -41,6 +41,7 @@ const OFF: NightshiftPilot = {
   reviewRounds: 0,
   isGoalDone: false,
   isAbortedByPilot: false,
+  pendingAnswer: '',
 }
 
 type $ = EngineInterface
@@ -86,6 +87,8 @@ const rules = (goal: string): string =>
 // The only things that may wait for the owner. Everything else gets decided.
 // Set from the owner's budget setting when the module registers.
 let budget = DEFAULT_BUDGET
+let maxReviews = 5
+let reviewNotes = ''
 const costRule = (): string => `Money: ${budget} When you choose, choose the cheapest option that does the job.`
 
 const WAIT_RULE =
@@ -245,6 +248,61 @@ const remember = async ($: $, pilot: NightshiftPilot | undefined): Promise<void>
   await $.store.set('sessions', pilot ? { ...kept, [session]: { goal: pilot.goal, everyMs: pilot.everyMs, at: now } } : kept)
 }
 
+// Sends only while the session is still quiet: the owner may have typed during a slow review.
+const send = async ($: $, text: string): Promise<boolean> => {
+  if ((await getPilot($)).isTurnRunning) return false
+  void $.prompt.submit({ text })
+  return true
+}
+
+// `pilot` is the state from before the tick reset the idle clock, so background work still shows.
+const followUp = async ($: $, answer: string, pilot: NightshiftPilot): Promise<boolean> => {
+  const ending = ((await classify($, endingText(answer), ENDING_LABELS)) ?? guessEnding(answer)) as Ending
+  const step = afterTurn({ ending, ...pilot, maxReviews, isWorkRunning: await isWorkRunning($, pilot) })
+  await patchPilot($, { nudgesInRow: step.nudgesInRow })
+
+  if (step.action === 'review') {
+    const reply = await $.model.fork({ prompt: reviewPrompt(pilot.goal, reviewNotes, budget) })
+    const review = reply.isAnswered ? parseReview(reply.text) : undefined
+    const round = pilot.reviewRounds + 1
+    await patchPilot($, { reviewRounds: round })
+
+    if (review === undefined) {
+      await log($, 'review', `round ${round}: no review (${reply.isAnswered ? '' : reply.reason}); next check-in will retry`)
+      return false
+    }
+    if (review.isPass) {
+      await patchPilot($, { isGoalDone: true })
+      await log($, 'done', `review round ${round} passed; check-ins paused`)
+      return false
+    }
+    await log($, 'review', `round ${round} failed: ${review.gaps.replace(/\s+/g, ' ')}`)
+    return send($, reviewText(review.gaps, round, reviewNotes))
+  }
+  if (step.action === 'hold') {
+    await log($, 'nudge', `holding: ${pilot.nudgesInRow} nudges with no work done; next check-in will retry`)
+    return false
+  }
+  if (step.action === 'nudge' && ending === 'asks-a-question') {
+    const reply = await $.model.fork({ prompt: standInPrompt(pilot.goal) })
+    const answers = reply.isAnswered ? reply.text.trim() : ''
+    if (/^NONE/i.test(answers)) {
+      // Nothing was really left open (a summary of decisions read as questions): say nothing.
+      await patchPilot($, { nudgesInRow: pilot.nudgesInRow })
+      await log($, 'answer', 'nothing left open; no message sent')
+      return false
+    }
+    await log($, 'answer', answers ? answers.replace(/\s+/g, ' ') : `no stand-in answer (${reply.isAnswered ? 'empty' : reply.reason})`)
+    return send($, answers ? answersText(answers) : nudgeText(ending, pilot.goal))
+  }
+  if (step.action === 'nudge') {
+    await log($, 'nudge', `${ending}: ${answer.slice(-160).replace(/\s+/g, ' ')}`)
+    return send($, nudgeText(ending, pilot.goal))
+  }
+
+  return false
+}
+
 const tick = async ($: $, stallMs: number): Promise<void> => {
   const pilot = await getPilot($)
   if (!pilot.isOn || pilot.isGoalDone) return showStatus($)
@@ -269,7 +327,12 @@ const tick = async ($: $, stallMs: number): Promise<void> => {
   const limitMs = hasFreshStop(pilot) && pilot.workInFlight > 0 ? Math.max(pilot.everyMs, stallMs) : pilot.everyMs
   if (!pilot.isTurnRunning && quietMs >= limitMs) {
     // Stamp now so a slow start doesn't fire a second check.
-    await patchPilot($, { lastTurnEndAt: now })
+    await patchPilot($, { lastTurnEndAt: now, pendingAnswer: '' })
+    // The last answer is followed up only now, after a whole quiet interval, so the owner
+    // gets the chance to reply first.
+    if (pilot.pendingAnswer && (await followUp($, pilot.pendingAnswer, pilot))) return showStatus($)
+    const after = await getPilot($)
+    if (after.isGoalDone || after.isTurnRunning) return showStatus($)
     await log($, 'check', `nothing happened for ${minutes(quietMs)}`)
     void $.prompt.submit({ text: checkText(pilot.goal, quietMs) })
   }
@@ -281,8 +344,8 @@ export const register: Register = (on, options) => {
   const everyDefaultMs = Math.max(1, Number(options.everyMinutes ?? 15)) * 60_000
   const stallMs = Math.max(5, Number(options.stallMinutes ?? 30)) * 60_000
   const extraDeny = parseExtraDeny(options.extraDeny)
-  const maxReviews = Math.max(0, Number(options.maxReviews ?? 5))
-  const reviewNotes = String(options.reviewNotes ?? '').trim()
+  maxReviews = Math.max(0, Number(options.maxReviews ?? 5))
+  reviewNotes = String(options.reviewNotes ?? '').trim()
   budget = String(options.budget ?? '').trim() || DEFAULT_BUDGET
 
   on('session.start', async ($, e, next) => {
@@ -426,6 +489,7 @@ export const register: Register = (on, options) => {
       turnKind,
       toolCallsThisTurn: 0,
       lastActivityAt: await $.clock.now(),
+      pendingAnswer: '',
     })
     void showStatus($)
 
@@ -502,7 +566,7 @@ export const register: Register = (on, options) => {
 
     const before = await getPilot($)
     const now = await $.clock.now()
-    const pilot = await patchPilot($, { isTurnRunning: false, lastTurnEndAt: now, isAbortedByPilot: false })
+    const pilot = await patchPilot($, { isTurnRunning: false, lastTurnEndAt: now, isAbortedByPilot: false, pendingAnswer: '' })
     if (!pilot.isOn) return done
 
     if (e.isAborted) {
@@ -514,47 +578,9 @@ export const register: Register = (on, options) => {
     }
     if (e.reason !== 'answer') return done
 
-    const ending = ((await classify($, endingText(e.answer), ENDING_LABELS)) ?? guessEnding(e.answer)) as Ending
-    // The Stop event that lists background work may land just after this one.
-    if (!hasFreshStop(await getPilot($))) await $.clock.sleep(1500)
-    const settled = await getPilot($)
-    const step = afterTurn({ ending, ...settled, maxReviews, isWorkRunning: await isWorkRunning($, settled) })
-    await patchPilot($, { nudgesInRow: step.nudgesInRow })
-
-    if (step.action === 'review') {
-      const reply = await $.model.fork({ prompt: reviewPrompt(pilot.goal, reviewNotes, budget) })
-      const review = reply.isAnswered ? parseReview(reply.text) : undefined
-      const round = pilot.reviewRounds + 1
-      await patchPilot($, { reviewRounds: round })
-
-      if (review === undefined) {
-        await log($, 'review', `round ${round}: no review (${reply.isAnswered ? '' : reply.reason}); next check-in will retry`)
-      } else if (review.isPass) {
-        await patchPilot($, { isGoalDone: true })
-        await log($, 'done', `review round ${round} passed; check-ins paused`)
-      } else {
-        await log($, 'review', `round ${round} failed: ${review.gaps.replace(/\s+/g, ' ')}`)
-        void $.prompt.submit({ text: reviewText(review.gaps, round, reviewNotes) })
-      }
-    }
-    if (step.action === 'hold') {
-      await log($, 'nudge', `holding: ${pilot.nudgesInRow} nudges with no work done; next check-in will retry`)
-    }
-    if (step.action === 'nudge' && ending === 'asks-a-question') {
-      const reply = await $.model.fork({ prompt: standInPrompt(pilot.goal) })
-      const answers = reply.isAnswered ? reply.text.trim() : ''
-      if (/^NONE/i.test(answers)) {
-        // Nothing was really left open (a summary of decisions read as questions): say nothing.
-        await patchPilot($, { nudgesInRow: pilot.nudgesInRow })
-        await log($, 'answer', 'nothing left open; no message sent')
-      } else {
-        await log($, 'answer', answers ? answers.replace(/\s+/g, ' ') : `no stand-in answer (${reply.isAnswered ? 'empty' : reply.reason})`)
-        void $.prompt.submit({ text: answers ? answersText(answers) : nudgeText(ending, pilot.goal) })
-      }
-    } else if (step.action === 'nudge') {
-      await log($, 'nudge', `${ending}: ${e.answer.slice(-160).replace(/\s+/g, ' ')}`)
-      void $.prompt.submit({ text: nudgeText(ending, pilot.goal) })
-    }
+    // Say nothing yet: the owner may be about to reply. The tick follows up once the session
+    // has been quiet for the whole check-in interval.
+    await patchPilot($, { pendingAnswer: e.answer })
     void showStatus($)
 
     return done

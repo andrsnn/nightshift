@@ -191,3 +191,49 @@ test('goal: the open goals from the latest status update', async () => {
   expect(openGoals(status)).toEqual(['G1 refine the director (DOING)', 'G2 make a few movies (PAUSED)'])
   expect(openGoals('no status here')).toEqual([])
 })
+
+// Owner: "it should wait if still idle after 15 THEN it prompts not immediately."
+test('after a turn ends, nightshift waits 15 quiet minutes before it says anything', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  mock.store(on)
+  const sent: string[] = []
+  on('ui.status', () => ({ value: undefined }))
+  on('command.register', () => ({ value: { command: 'nightshift' } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.messages', () => ({ value: [] }))
+  on('session.id', () => ({ value: 's1' }))
+  on('model.classify', () => ({ value: 'stopped-early' }))
+  on('prompt.submit', (_, e) => {
+    sent.push(e.text)
+    return { text: e.text }
+  })
+  on('agent.list', () => ({ value: [] }))
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await run($, 'finish the parser')
+  await clock.advance(1000)
+  sent.length = 0
+
+  const turn = async (id: string): Promise<void> => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await ($ as any).turn.start({ turnId: id, text: 'go' })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await ($ as any).turn.complete({ turnId: id, reason: 'answer', answer: 'I stopped here.', isAborted: false })
+  }
+
+  await turn('t1')
+  await clock.advance(14 * 60_000)
+  expect(sent).toEqual([])
+  await clock.advance(2 * 60_000)
+  expect(sent.length).toBe(1)
+  expect(sent[0]).toContain('Nightshift')
+
+  // The owner replies within the 15 minutes: the held answer is dropped, nothing is sent.
+  sent.length = 0
+  await turn('t2')
+  await clock.advance(5 * 60_000)
+  await turn('t3')
+  await clock.advance(10 * 60_000)
+  expect(sent).toEqual([])
+})

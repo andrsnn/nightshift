@@ -20,7 +20,7 @@ You tell Claude Code to work on its own and go to bed. When you wake up, it has 
 <details>
 <summary>The details, one by one</summary>
 
-- **Answers its own questions.** If Claude ends a turn asking you something, nightshift sends it back: nobody will answer, so make the call, write it down, and keep going. The question tool is switched off while it runs.
+- **Answers its own questions.** If Claude ends a turn asking you something, nightshift sends it back: nobody will answer, so make the call, write it down, and keep going. The question tool is switched off while it runs. It waits until the session has been quiet for the check-in time (15 minutes) before it sends anything, so you can reply first. If you reply, it stays quiet.
 - **Keeps every task bounded.** Each task, and each helper agent Claude starts, gets a clear end: the steps, one check, at most two tries and a time limit. Then it reports, done or not. Check-ins catch any agent that keeps rerunning the same thing, and the reviewer sends open-ended loops back.
 - **Cleans up after itself.** Whatever Claude or its helper agents start, they stop: dev servers, browsers, background jobs and temp files. Check-ins look for leftovers and stop them, and Claude never hands you a list of processes to kill.
 - **Holds Claude to your goal.** When Claude says it's done, a strict reviewer checks the work against what you first asked for. The reviewer is a copy of the session with the whole conversation. Did every part get done, or only a sample? Did anyone actually look at the output, or only run the tests? Would you accept it next to your mock? If not, the work goes back with a list of gaps, up to 5 times. It only reviews when nothing is still running.

@@ -20,17 +20,17 @@ You tell Claude Code to work on its own and go to bed. When you wake up, it has 
 <details>
 <summary>The details, one by one</summary>
 
-- **Answers its own questions.** If Claude ends a turn asking you something, nightshift sends it back: nobody will answer, so make the call, write it down, and keep going. The question tool is switched off while it runs. It waits until the session has been quiet for the check-in time (15 minutes) before it sends anything, so you can reply first. If you reply, it stays quiet.
+- **Answers its own questions.** If Claude ends a turn asking you something, nightshift sends it back: nobody will answer, so make the call, write it down, and keep going. The question tool is switched off while it runs. It waits until the session has been quiet for the check-in time (15 minutes) before it sends anything, so you can reply first. If you reply, it stays quiet. It remembers what it already answered and never answers the same question twice. It never says yes for you to something a permission prompt or safety check refused. Those wait for you.
 - **Keeps every task bounded.** Each task, and each helper agent Claude starts, gets a clear end: the steps, one check, at most two tries and a time limit. Then it reports, done or not. Check-ins catch any agent that keeps rerunning the same thing, and the reviewer sends open-ended loops back.
 - **Cleans up after itself.** Whatever Claude or its helper agents start, they stop: dev servers, browsers, background jobs and temp files. Check-ins look for leftovers and stop them, and Claude never hands you a list of processes to kill.
 - **Holds Claude to your goal.** When Claude says it's done, a strict reviewer checks the work against what you first asked for. The reviewer is a copy of the session with the whole conversation. Did every part get done, or only a sample? Did anyone actually look at the output, or only run the tests? Would you accept it next to your mock? If not, the work goes back with a list of gaps, up to 5 times. It only reviews when nothing is still running.
 - **Settles permission prompts.** Only prompts that would really wait for you: your rules and auto mode decide first. Safe local steps are approved. Anything destructive or public is refused, with a reason, so Claude takes another route instead of waiting. Examples: force pushes, publishing, deploys, dropping databases, rebooting, sending messages.
 - **Spends as little as it can.** Free options come first: your Claude Code subscription, local tools, models already set up. Cloud GPUs such as RunPod only when nothing free works: the cheapest machine that fits, at most $0.60 an hour, shut down right after each run. Check-ins look for paid machines left running, and the reviewer counts wasted money as a gap.
 - **Stays quiet otherwise.** It only speaks up when Claude is stuck or off course. Waiting on its own agents isn't stuck: their reports wake Claude, so nightshift says nothing.
-- **Checks in.** If nothing at all happens for 15 minutes (no turn, no tool call from any agent), it asks Claude what's stuck and gets it moving again.
+- **Checks in.** If nothing at all happens for 15 minutes (no turn, no tool call from any agent), it asks Claude what's stuck and gets it moving again. When every open goal is waiting on you (BLOCKED or PAUSED), or every goal is done, it waits longer each time: 15 minutes, then 30, 60, 120 and 240.
 - **Restarts stuck turns.** A turn with no activity for 30 minutes is stopped, and Claude is told to try another way.
 - **Keeps a log** of everything it approved, refused and sent back, for the morning.
-- **Follows your goals as they change.** Run `/nightshift` with no goal and it takes the open goals (G1, G2...) from the project's STATUS.md when Claude updated it after its latest status message, and from that message otherwise. Finished goals are left out. If you asked for more after that list was made, your newest messages are added too. It ships a status-update skill so those updates always have that shape, with nothing else to install.
+- **Follows your goals as they change.** Run `/nightshift` with no goal and it takes the open goals (G1, G2...) from whatever is newest: Claude's last call to the goals tool, the project's STATUS.md, or Claude's latest status message. Finished goals are left out. If you asked for more after that list was made, your newest messages are added too. It checks for a newer list before each check-in. The list starts at a line that begins with GOALS, so "GOALS (updated Nov 14)" works too. If the latest status message has no list it can read, it says so and doesn't fall back to an older one. It ships a status-update skill so those updates always have that shape, with nothing else to install.
 
 </details>
 
@@ -74,6 +74,28 @@ When every goal is done and checked, Claude turns nightshift off itself, unless 
 It stays on when the session restarts.
 
 The status line shows `nightshift on` while it runs, and `nightshift: goal done` once a review passes.
+
+## Keeping the goals current
+
+Claude can update the goals itself with the `mcp__nightshift__goals` tool. It sends the full list, each goal with its ID, your words and its state (DOING, DONE, BLOCKED, PAUSED or DROPPED). nightshift tracks that list and rewrites the GOALS block in the project's STATUS.md to match, so the two never disagree. Goals left out of the list are removed. The tool works whether nightshift is on or off.
+
+Every call says exactly what changed, in the same shape as a status update:
+
+```
+Nightshift goals updated. Rewrote the GOALS block in /work/game/STATUS.md.
+
+GOALS
+G1 Build the menu - DOING
+G3 Port combat - DONE
+G4 Add the delve system - DOING
+
+CHANGED
+- G4: added - DOING
+- G3: DOING → DONE
+- G2: removed (was "Fix the save bug" - DOING)
+```
+
+The same changes show up as a short popup and in `/nightshift log`. When STATUS.md has no GOALS block yet, the tool adds one at the end. When there's no STATUS.md, it makes one.
 
 ## Settings
 

@@ -197,3 +197,179 @@ export const parseArgs = (args: string): Parsed => {
 }
 
 export const minutes = (ms: number): string => `${Math.max(0, Math.round(ms / 60_000))}m`
+
+// ---- Goals: the GOALS block of a status update or STATUS.md ----
+
+export const GOAL_STATES = ['DOING', 'DONE', 'BLOCKED', 'PAUSED', 'DROPPED'] as const
+export type GoalState = (typeof GOAL_STATES)[number]
+export type Goal = { id: string; words: string; state: GoalState }
+
+const STATE_RE = GOAL_STATES.join('|')
+// "GOALS", "GOALS (updated Nov 14)", "## GOALS:", "**GOALS**". Upper case only, so prose about goals is not a header.
+const HEADER = /^(?:#{1,6}\s*)?(?:\*\*)?GOALS\b(?![-\w])/
+// "G7 the words - DOING", "- G7: "the words" – BLOCKED on your choice below".
+const GOAL_LINE = new RegExp(`^(?:[-*]\\s*)?(G\\d+)\\b[:.]?\\s+(.+?)\\s+[-\\u2013\\u2014]\\s+(${STATE_RE})\\b(.*)$`, 'i')
+
+const unquote = (text: string): string => text.trim().replace(/^["“](.*)["”]$/, '$1').trim()
+
+// The first GOALS block in a text: where it is and the goals in it. `found` is false when there is no header.
+// The block runs from the header to the first line that is not a goal line (blank lines before the first goal
+// are skipped).
+export const parseGoalsBlock = (
+  text: string,
+): { found: boolean; goals: Goal[]; header: number; end: number; notes: Record<string, string>; isQuoted: boolean } => {
+  const lines = text.split(/\r?\n/)
+  const header = lines.findIndex(line => HEADER.test(line.trim()))
+  const goals: Goal[] = []
+  const notes: Record<string, string> = {}
+  let isQuoted = false
+  if (header < 0) return { found: false, goals, header, end: header, notes, isQuoted }
+  let end = header + 1
+  for (let at = header + 1; at < lines.length; at++) {
+    const line = (lines[at] ?? '').trim()
+    if (!line && goals.length === 0) {
+      end = at + 1
+      continue
+    }
+    const m = line.match(GOAL_LINE)
+    if (!m) break
+    const id = (m[1] ?? '').toUpperCase()
+    if (goals.length === 0) isQuoted = /^["“]/.test((m[2] ?? '').trim())
+    goals.push({ id, words: unquote(m[2] ?? '').slice(0, 300), state: (m[3] ?? '').toUpperCase() as GoalState })
+    if ((m[4] ?? '').trim()) notes[id] = m[4] ?? ''
+    end = at + 1
+  }
+
+  return { found: true, goals, header, end, notes, isQuoted }
+}
+
+export const isOpenGoal = (goal: Goal): boolean => goal.state !== 'DONE' && goal.state !== 'DROPPED'
+
+export const goalLine = (goal: Goal, isQuoted = false): string =>
+  `${goal.id} ${isQuoted ? `"${goal.words}"` : goal.words} - ${goal.state}`
+
+// Nightshift's goal text from a list: the open goals, or a line saying every one is done.
+export const goalsText = (goals: readonly Goal[], from = ''): string => {
+  const open = goals.filter(isOpenGoal)
+  if (goals.length > 0 && open.length === 0) return `Every goal${from ? ` in ${from}` : ''} is done.`
+
+  return `Open goals${from ? ` (from ${from})` : ''}:\n${open.map(goal => `${goal.id} ${goal.words} (${goal.state})`).join('\n')}`
+}
+
+// True when nothing on the list is being worked on: every open goal is BLOCKED or PAUSED (waiting on the
+// owner), or every goal is done. Check-ins back off then. False when the list is unknown.
+export const isWaitingOnOwner = (goals: readonly Goal[] | undefined): boolean =>
+  goals !== undefined && goals.length > 0 && !goals.some(goal => goal.state === 'DOING')
+
+// Check-ins while only owner-blocked goals are left: the interval doubles each time, up to 16 times.
+export const checkInDelay = (everyMs: number, idleChecks: number): number => everyMs * 2 ** Math.min(Math.max(0, idleChecks), 4)
+
+export type GoalsDiff = {
+  added: Goal[]
+  removed: Goal[]
+  moved: { goal: Goal; was: GoalState }[]
+  reworded: { goal: Goal; was: string }[]
+}
+
+export const diffGoals = (before: readonly Goal[], after: readonly Goal[]): GoalsDiff => {
+  const old = new Map(before.map(goal => [goal.id, goal]))
+  const now = new Set(after.map(goal => goal.id))
+  const diff: GoalsDiff = { added: [], removed: before.filter(goal => !now.has(goal.id)), moved: [], reworded: [] }
+  for (const goal of after) {
+    const was = old.get(goal.id)
+    if (!was) {
+      diff.added.push(goal)
+      continue
+    }
+    if (was.state !== goal.state) diff.moved.push({ goal, was: was.state })
+    if (was.words !== goal.words) diff.reworded.push({ goal, was: was.words })
+  }
+
+  return diff
+}
+
+// The "what changed" lines, one per change, each starting with the goal ID.
+export const changeLines = (diff: GoalsDiff): string[] => [
+  ...diff.added.map(goal => `- ${goal.id}: added - ${goal.state}`),
+  ...diff.moved.map(({ goal, was }) => `- ${goal.id}: ${was} → ${goal.state}`),
+  ...diff.reworded.map(({ goal, was }) => `- ${goal.id}: words changed (was "${was}")`),
+  ...diff.removed.map(goal => `- ${goal.id}: removed (was "${goal.words}" - ${goal.state})`),
+]
+
+// STATUS.md with its GOALS block replaced by `goals`, or a GOALS block added at the end when it has none.
+// A goal whose state did not change keeps any note written after its state.
+export const writeGoalsBlock = (text: string | undefined, goals: readonly Goal[]): string => {
+  const source = text ?? ''
+  const block = parseGoalsBlock(source)
+  if (!block.found) {
+    const lines = ['GOALS', ...goals.map(goal => goalLine(goal, true))]
+    return source.trim() ? `${source.replace(/\s*$/, '')}\n\n${lines.join('\n')}\n` : `# Status\n\n${lines.join('\n')}\n`
+  }
+  const eol = source.includes('\r\n') ? '\r\n' : '\n'
+  const lines = source.split(/\r?\n/)
+  const old = new Map(block.goals.map(goal => [goal.id, goal]))
+  const isQuoted = block.isQuoted || block.goals.length === 0
+  const fresh = goals.map(goal => {
+    const note = old.get(goal.id)?.state === goal.state ? (block.notes[goal.id] ?? '') : ''
+    return `${goalLine(goal, isQuoted)}${note}`
+  })
+  // Keep a blank line between the block and whatever follows it.
+  const after = lines.slice(block.end)
+  const gap = after.length > 0 && (after[0] ?? '').trim() !== '' ? [''] : []
+
+  return [...lines.slice(0, block.header + 1), ...fresh, ...gap, ...after].join(eol)
+}
+
+// ---- Settled questions and refused actions ----
+
+export type Settled = { question: string; answer: string }
+
+// The stand-in's numbered reply: "1. the question - the answer" (or "question: answer"), one per line.
+export const parseAnswers = (text: string): Settled[] =>
+  text
+    .split(/\r?\n/)
+    .map(line => line.trim().replace(/^(\d+[.)]|[-*])\s*/, ''))
+    .filter(Boolean)
+    .map(line => {
+      const cut = line.match(/^(.+?)(?:\s+[-–—]\s+|:\s+)(.+)$/)
+      return cut ? { question: (cut[1] ?? '').trim(), answer: (cut[2] ?? '').trim() } : { question: line, answer: '' }
+    })
+
+const wordSet = (text: string): Set<string> =>
+  new Set(text.toLowerCase().replace(/[^a-z0-9.\s]/g, ' ').split(/\s+/).filter(word => word.length >= 3))
+
+// Two questions are the same when most of their words match.
+export const isSameQuestion = (a: string, b: string): boolean => {
+  const left = wordSet(a)
+  const right = wordSet(b)
+  if (left.size === 0 || right.size === 0) return a.trim().toLowerCase() === b.trim().toLowerCase()
+  const shared = [...left].filter(word => right.has(word)).length
+
+  return shared / Math.min(left.size, right.size) >= 0.6
+}
+
+export const freshAnswers = (answers: readonly Settled[], settled: readonly Settled[]): Settled[] =>
+  answers.filter(item => !settled.some(old => isSameQuestion(item.question, old.question)))
+
+const REFUSAL_WORDS = /\b(refus\w*|denied|blocked by|safety check|permission (check|prompt|rule)|auto mode|classifier|not allowed|was blocked)\b/i
+
+// The word that names a refused action: "Bash: git push origin master" gives "push".
+const actionWord = (call: string): string => {
+  const parts = call.replace(/^[\w-]+:\s*/, '').trim().split(/\s+/)
+  const second = parts[1] ?? ''
+  return /^[a-z][\w-]{2,}$/i.test(second) ? second.toLowerCase() : (parts[0] ?? '').toLowerCase()
+}
+
+const escapeRe = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+export const REFUSED_ANSWER = "leave it for the owner. A permission or safety check refused it, so only the owner can say yes. Don't try it another way."
+
+// Answers about an action a permission or safety check refused are never given on the owner's behalf.
+export const guardRefused = (answers: readonly Settled[], refused: readonly string[]): Settled[] => {
+  const actions = refused.map(actionWord).filter(word => word.length >= 3)
+  return answers.map(item => {
+    const line = `${item.question} ${item.answer}`.toLowerCase()
+    const isAboutRefused = REFUSAL_WORDS.test(item.question) || actions.some(word => new RegExp(`\\b${escapeRe(word)}\\b`).test(line))
+    return isAboutRefused ? { question: item.question, answer: REFUSED_ANSWER } : item
+  })
+}

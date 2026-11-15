@@ -23,12 +23,26 @@ export type NightshiftPilot = {
   pendingAnswer: string
   // The owner forced it on: the agent's off tool is refused; only the owner can turn it off.
   isForced?: boolean
+  // The goal list nightshift tracks, from the latest status update, STATUS.md or the goals tool.
+  goals?: NightshiftGoal[]
+  // Questions already settled on the owner's behalf, so they are never answered twice.
+  settled?: { question: string; answer: string }[]
+  // Actions a permission or safety check refused this session. They stay for the owner.
+  refused?: string[]
+  // Check-ins in a row while every open goal waits on the owner. Each one doubles the next wait.
+  idleChecks?: number
+}
+
+export type NightshiftGoal = {
+  id: string
+  words: string
+  state: 'DOING' | 'DONE' | 'BLOCKED' | 'PAUSED' | 'DROPPED'
 }
 
 export type NightshiftLogEntry = {
   at: number
   session: string
-  kind: 'on' | 'off' | 'allow' | 'deny' | 'nudge' | 'check' | 'stall' | 'review' | 'answer' | 'done'
+  kind: 'on' | 'off' | 'allow' | 'deny' | 'nudge' | 'check' | 'stall' | 'review' | 'answer' | 'done' | 'goals'
   text: string
 }
 

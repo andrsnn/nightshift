@@ -17,8 +17,21 @@ import {
   riskText,
   DEFAULT_BUDGET,
   RISK_LABELS,
+  changeLines,
+  checkInDelay,
+  diffGoals,
+  freshAnswers,
+  goalLine,
+  goalsText,
+  guardRefused,
+  isOpenGoal,
+  isWaitingOnOwner,
+  parseAnswers,
+  parseGoalsBlock,
+  writeGoalsBlock,
+  GOAL_STATES,
 } from './judge'
-import type { Ending } from './judge'
+import type { Ending, Goal, GoalState, Settled } from './judge'
 
 const PILOT = { plugin: 'nightshift', key: 'pilot' } as const
 const LOG_KEEP = 300
@@ -66,6 +79,14 @@ const log = async ($: $, kind: NightshiftLogEntry['kind'], text: string): Promis
 }
 
 const OFF_TOOL = 'mcp__nightshift__off'
+const GOALS_TOOL = 'mcp__nightshift__goals'
+const SETTLED_KEEP = 40
+const REFUSED_KEEP = 20
+
+const GOALS_RULE = `When the owner's goals change (one added, finished, blocked, paused or dropped), call the ${GOALS_TOOL} tool with the full list, so nightshift and STATUS.md track the same goals. Put the changes it reports in your next status update.`
+
+const REFUSED_RULE =
+  'An action that a permission prompt, a safety check, auto mode or nightshift refused stays refused. Never try it another way to get around the check. Note it for the owner and keep going with the rest.'
 
 const offRule = (isForced: boolean): string =>
   isForced
@@ -84,6 +105,8 @@ const rules = (goal: string, isForced = false): string =>
     '- AskUserQuestion is switched off. Ending your turn with a question wastes the night.',
     '- Keep a short "Decisions I made" list in your final summary so the owner can check them in the morning.',
     `- ${STATUS_RULE}`,
+    `- ${GOALS_RULE}`,
+    `- ${REFUSED_RULE}`,
     '- If one item truly needs the owner, note it and do all the other work you can, in parallel where you can (background tasks, subagents).',
     '- Run scripts so they never wait on the keyboard: --yes style flags, CI=1, timeouts, background runs for long jobs.',
     '- Permission prompts are answered for you: safe local steps are approved, destructive or outward-facing ones are refused. When one is refused, find a safer way or set it aside, and keep going.',
@@ -121,7 +144,7 @@ const nudgeText = (ending: Ending, goal: string): string =>
     : `${NUDGE_MARK} the owner asked you to work without them, so settle that yourself: choose what best serves the goal (${goal || 'see the task above'}), take your own recommendation where you made one, prefer choices that can be undone, add it to your "Decisions I made" list, and keep going. ${WAIT_RULE} ${BOUND_RULE} ${CLEANUP_RULE}`
 
 // When the session leaves questions for the owner, a fork of it answers them as the owner would.
-const standInPrompt = (goal: string): string =>
+const standInPrompt = (goal: string, settled: readonly Settled[] = [], refused: readonly string[] = []): string =>
   [
     'Step out of your role for a moment. You are standing in for the owner, who wants every open question settled without them.',
     "The owner's goal:",
@@ -131,6 +154,11 @@ const standInPrompt = (goal: string): string =>
     "For each, give the answer the owner would most likely give, from the goal, what they said in this conversation and their standing rules. Where you made a recommendation, that is the answer, unless a cheaper option does the job just as well: then pick the cheaper one.",
     costRule(),
     'Answer "skip it for now and do the rest" only for a password or login, spending beyond that budget, making something public or sending it to people, or deleting something that cannot be got back.',
+    'Never answer yes to an action that a permission prompt, a safety check, auto mode or nightshift refused, and never suggest a way around the check. Answer "leave it for the owner" instead.',
+    ...(refused.length ? ['Refused in this session:', ...refused.map(call => `- ${call.slice(0, 200)}`)] : []),
+    ...(settled.length
+      ? ['Already settled on the owner\'s behalf earlier. Leave these out, even if they are asked again:', ...settled.map(item => `- ${item.question} - ${item.answer}`.slice(0, 300))]
+      : []),
     'A "Decisions I made" list or a summary of choices already made is not open: leave it out.',
     'Reply as a numbered list, one line each: the question in a few words, then the answer. No preamble. If nothing is actually left open for the owner, reply with exactly NONE.',
   ].join('\n')
@@ -139,7 +167,7 @@ const answersText = (answers: string): string =>
   [
     `${NUDGE_MARK} the owner wants these settled without them. Answers on their behalf:`,
     answers,
-    `Act on them now, add them to your "Decisions I made" list, and keep going. ${WAIT_RULE} ${BOUND_RULE} ${CLEANUP_RULE} ${costRule()}`,
+    `Act on them now, add them to your "Decisions I made" list, and keep going. ${REFUSED_RULE} ${WAIT_RULE} ${BOUND_RULE} ${CLEANUP_RULE} ${costRule()}`,
   ].join('\n')
 
 const reviewText = (gaps: string, round: number, notes: string): string =>
@@ -151,10 +179,13 @@ const reviewText = (gaps: string, round: number, notes: string): string =>
     ...(notes ? [`How the owner checks work: ${notes}`] : []),
   ].join('\n')
 
-const checkText = (goal: string, idleMs: number): string =>
+const checkText = (goal: string, idleMs: number, nextMs = 0): string =>
   [
     `${CHECK_MARK}: the owner is still away and this session has been idle for ${minutes(idleMs)}.`,
     `Goal: ${goal || '(the task the owner gave you in this conversation)'}`,
+    ...(nextMs
+      ? [`No goal on the list is DOING: every open goal waits on the owner, or every goal is done. If nothing changed, do steps 3 and 4 and reply in one line. The next check-in waits ${minutes(nextMs)}. If a goal can move again, call ${GOALS_TOOL} with its new state.`]
+      : []),
     '1. Look for anything stuck: a question you asked, a decision you put off, a background job or agent that failed or hung, a script waiting on input. Settle it yourself.',
     `2. Look for anything open-ended: an agent or job looping on runs, retries or tuning with no stated end. Give it a bound now or stop it and take its report. ${BOUND_RULE}`,
     '3. Make sure no paid cloud machine (a RunPod pod or the like) is left running with nothing to do; shut down and delete any that are.',
@@ -168,24 +199,12 @@ const stallText = (stallMs: number): string =>
 
 // The goals still open in Claude's latest status update: a "GOALS" heading followed by lines like
 // "G2 <the goal in the owner's words> - DOING". Finished and dropped goals are left out.
-export const openGoals = (text: string): string[] => {
-  const lines = text.split(/\r?\n/)
-  const at = lines.findIndex(line => line.trim() === 'GOALS')
-  if (at < 0) return []
-  lines.splice(0, at + 1)
-  const out: string[] = []
-  for (const raw of lines) {
-    const line = raw.trim()
-    if (!line) {
-      if (out.length) break
-      continue
-    }
-    const m = line.match(/^(G\d+)\s+(.+?)\s+[-\u2013\u2014]\s+(DOING|DONE|BLOCKED|PAUSED|DROPPED)\s*$/i)
-    if (!m) break
-    if (!/^(DONE|DROPPED)$/i.test(m[3] ?? '')) out.push(`${m[1]} ${m[2]} (${(m[3] ?? '').toUpperCase()})`)
-  }
-  return out
-}
+// The header may carry more text ("GOALS (updated Nov 14)").
+export const openGoals = (text: string): string[] =>
+  parseGoalsBlock(text).goals.filter(isOpenGoal).map(goal => `${goal.id} ${goal.words} (${goal.state})`)
+
+// A message that looks like a status update: it has a GOALS header or starts a line with "Update:".
+const isStatusUpdate = (text: string): boolean => parseGoalsBlock(text).found || /^\s*Update:/m.test(text)
 
 const STATES = 'DOING|DONE|BLOCKED|PAUSED|DROPPED'
 
@@ -194,8 +213,11 @@ const STATES = 'DOING|DONE|BLOCKED|PAUSED|DROPPED'
 //   - G4 "the owner's words" - DOING: notes        G20 DONE (687953b): notes
 //   G1 | the goal | approved Nov 9 "words" | doing | ETA        - G21 owner, Nov 11: "words" (no state: open)
 // The goal's words come from its first line, its state from the latest line that gives one.
-// Returns undefined when the file has no goal lines at all.
-export const statusFileGoals = (text: string): string[] | undefined => {
+// A GOALS block (the status-update shape, which the goals tool writes) wins over every other goal line.
+// Returns undefined when the file has no goal lines at all. A goal line with no state counts as DOING.
+export const statusFileList = (text: string): Goal[] | undefined => {
+  const block = parseGoalsBlock(text)
+  if (block.goals.length > 0) return block.goals
   const goals = new Map<string, { words: string; state: string }>()
   for (const raw of text.split(/\r?\n/)) {
     const m = raw.trim().replace(/^[-*]\s*/, '').match(/^(G\d+)\b\s*(.*)$/)
@@ -228,9 +250,28 @@ export const statusFileGoals = (text: string): string[] | undefined => {
   }
   if (goals.size === 0) return undefined
 
-  return [...goals]
-    .filter(([, goal]) => !/^(DONE|DROPPED)$/.test(goal.state))
-    .map(([id, goal]) => `${id} ${goal.words || '(see STATUS.md)'} (${goal.state || 'OPEN'})`)
+  return [...goals].map(([id, goal]) => ({ id, words: goal.words || '(see STATUS.md)', state: (goal.state || 'DOING') as GoalState }))
+}
+
+export const statusFileGoals = (text: string): string[] | undefined =>
+  statusFileList(text)?.filter(isOpenGoal).map(goal => `${goal.id} ${goal.words} (${goal.state})`)
+
+// The goals a call to the goals tool carried, or undefined when its input is not a valid list.
+export const toolGoals = (input: unknown): Goal[] | undefined => {
+  const list = (input as { goals?: unknown } | undefined)?.goals
+  if (!Array.isArray(list)) return undefined
+  const goals: Goal[] = []
+  for (const item of list) {
+    const row = (item ?? {}) as Record<string, unknown>
+    const id = String(row.id ?? '').trim().toUpperCase()
+    const words = String(row.words ?? '').trim().replace(/\s+/g, ' ')
+    const state = String(row.state ?? '').trim().toUpperCase()
+    if (!/^G\d+$/.test(id) || !words || !(GOAL_STATES as readonly string[]).includes(state)) return undefined
+    if (goals.some(goal => goal.id === id)) return undefined
+    goals.push({ id, words: words.slice(0, 300), state: state as GoalState })
+  }
+
+  return goals
 }
 
 // Text the owner typed, or '' for what only looks like it: wrappers, slash commands, system reminders,
@@ -270,8 +311,29 @@ type Row = { role: 'user' | 'assistant'; text: string; toolUses?: readonly { too
 // 3. otherwise the owner's first message.
 // Owner messages written after the goal list was made are added (up to the newest 5), and the list is marked
 // as maybe stale, so new asks are never lost.
-export const goalFrom = async (all: readonly Row[], read: (path: string) => Promise<string | undefined>, cwd: string): Promise<string> => {
-  const statusAt = all.findLastIndex(row => row.role === 'assistant' && openGoals(row.text).length > 0)
+// A call to the goals tool is newer than all of these: its list wins until something newer comes along.
+// When the latest status update has no GOALS block nightshift can read, it says so and never falls back to
+// an older list.
+export const goalFrom = async (all: readonly Row[], read: (path: string) => Promise<string | undefined>, cwd: string): Promise<string> =>
+  (await goalSource(all, read, cwd)).text
+
+export const goalSource = async (
+  all: readonly Row[],
+  read: (path: string) => Promise<string | undefined>,
+  cwd: string,
+): Promise<{ text: string; goals?: Goal[] }> => {
+  const statusAt = all.findLastIndex(row => row.role === 'assistant' && isStatusUpdate(row.text))
+  let toolAt = -1
+  let toolList: Goal[] | undefined
+  all.forEach((row, at) => {
+    for (const use of row.toolUses ?? []) {
+      const goals = use.tool === GOALS_TOOL ? toolGoals(use.input) : undefined
+      if (goals) {
+        toolAt = at
+        toolList = goals
+      }
+    }
+  })
   let fileAt = -1
   let filePath = ''
   all.forEach((row, at) => {
@@ -292,30 +354,91 @@ export const goalFrom = async (all: readonly Row[], read: (path: string) => Prom
     return `\nThe owner wrote after that list was made, so it may be stale:\n${later.map(row => `- ${row.text.slice(0, 300)}`).join('\n')}`
   }
 
+  if (toolList && toolAt >= statusAt && toolAt >= fileAt) {
+    return { text: `${goalsText(toolList, `the ${GOALS_TOOL} tool`).slice(0, 2000)}${since(toolAt)}`, goals: toolList }
+  }
   if (filePath && fileAt >= statusAt) {
     const text = await read(filePath)
-    const goals = text === undefined ? undefined : statusFileGoals(text)
-    if (goals) {
-      const list = goals.length ? `Open goals (from ${filePath}):\n${goals.join('\n')}` : `Every goal in ${filePath} is done.`
-      return `${list.slice(0, 2000)}${since(fileAt)}`
-    }
+    const goals = text === undefined ? undefined : statusFileList(text)
+    if (goals) return { text: `${goalsText(goals, filePath).slice(0, 2000)}${since(fileAt)}`, goals }
   }
   const status = all[statusAt]
-  if (status) return `${`Open goals:\n${openGoals(status.text).join('\n')}`.slice(0, 2000)}${since(statusAt)}`
-
   const first = owner[0]
-  if (!first) return ''
   const last = owner.length > 1 ? owner[owner.length - 1] : undefined
-  return last ? `${first.text.slice(0, 800)}\n(Latest from the owner: ${last.text.slice(0, 600)})` : first.text.slice(0, 800)
+  const fromOwner = !first ? '' : last ? `${first.text.slice(0, 800)}\n(Latest from the owner: ${last.text.slice(0, 600)})` : first.text.slice(0, 800)
+  if (status) {
+    const goals = parseGoalsBlock(status.text).goals
+    if (goals.length > 0) return { text: `${goalsText(goals).slice(0, 2000)}${since(statusAt)}`, goals }
+    const note = `No goal list: Claude's latest status update has no GOALS block nightshift can read (a line starting with GOALS, then lines like "G1 <the goal> - DOING"). Older lists are not used. Write the GOALS block, or call ${GOALS_TOOL}.`
+    return { text: fromOwner ? `${note}\nFrom the owner: ${fromOwner}` : note }
+  }
+
+  return { text: fromOwner }
 }
 
-const goalFromConversation = async ($: $): Promise<string> => {
+const readText = ($: $, path: string): Promise<string | undefined> =>
+  $.fs.read(path).then(text => (typeof text === 'string' ? text : undefined)).catch(() => undefined)
+
+const goalFromConversation = async ($: $): Promise<{ text: string; goals?: Goal[] }> => {
   const [all, cwd] = await Promise.all([$.session.messages(), $.session.cwd().catch(() => '')])
-  const read = (path: string): Promise<string | undefined> =>
-    $.fs.read(path).then(text => (typeof text === 'string' ? text : undefined)).catch(() => undefined)
 
-  return goalFrom(all, read, cwd)
+  return goalSource(all, path => readText($, path), cwd)
 }
+
+// The goals tool: the session hands over the full list. Nightshift tracks it and rewrites the GOALS block of
+// the project's STATUS.md, then says exactly what changed, in the status-update shape.
+export const goalsReport = (goals: readonly Goal[], lines: readonly string[], where: string): string =>
+  [
+    `Nightshift goals updated. ${where}`,
+    '',
+    'GOALS',
+    ...(goals.length ? goals.map(goal => goalLine(goal)) : ['Nothing.']),
+    '',
+    'CHANGED',
+    ...(lines.length ? lines : ['Nothing.']),
+  ].join('\n')
+
+const setGoals = async ($: $, input: unknown): Promise<string> => {
+  const goals = toolGoals(input)
+  if (!goals) {
+    return `Nothing changed: "goals" must be the full list, each with an id like G1, the owner's words, and a state (${GOAL_STATES.join(', ')}), with no id twice.`
+  }
+  const cwd = await $.session.cwd().catch(() => '')
+  const asked = String((input as { path?: unknown }).path ?? '').trim()
+  const path = asked || `${cwd.replace(/[\\/]$/, '')}/STATUS.md`
+  const before = await readText($, path)
+  const pilot = await getPilot($)
+  const old = pilot.goals ?? (before === undefined ? undefined : statusFileList(before)) ?? []
+  const lines = changeLines(diffGoals(old, goals))
+
+  let where: string
+  try {
+    const hadBlock = before !== undefined && parseGoalsBlock(before).found
+    await $.fs.write(path, writeGoalsBlock(before, goals))
+    where = `${before === undefined ? 'Created' : hadBlock ? 'Rewrote the GOALS block in' : 'Added a GOALS block to'} ${path}.`
+  } catch (error) {
+    where = `Could not write ${path} (${String((error as Error)?.message ?? error).slice(0, 120)}), so only nightshift has the new list.`
+  }
+
+  const next = await patchPilot($, {
+    goals,
+    goal: goalsText(goals, `the ${GOALS_TOOL} tool`),
+    isGoalGiven: false,
+    idleChecks: 0,
+    ...(goals.some(goal => goal.state === 'DOING') ? { isGoalDone: false } : {}),
+  })
+  if (next.isOn) await remember($, next)
+  const summary = lines.length ? lines.map(line => line.replace(/^- /, '')).join('; ') : 'no change'
+  await log($, 'goals', summary)
+  void $.ui.toast(`nightshift goals: ${summary}`.slice(0, 200))
+
+  return goalsReport(goals, lines, where)
+}
+
+// The stand-in's answers, with anything a check refused handed back to the owner and anything settled
+// before left out.
+export const settleAnswers = (reply: string, settled: readonly Settled[], refused: readonly string[]): Settled[] =>
+  freshAnswers(guardRefused(parseAnswers(reply), refused), settled)
 
 const classify = async ($: $, text: string, labels: readonly string[]): Promise<string | undefined> => {
   try {
@@ -377,6 +500,13 @@ const turnOffByAgent = async ($: $, done: string): Promise<string> => {
   return 'Nightshift is off. In your final message, list each goal and how you checked it is done.'
 }
 
+const noteRefused = async ($: $, call: string): Promise<void> => {
+  const pilot = await getPilot($)
+  const refused = pilot.refused ?? []
+  if (refused.includes(call)) return
+  await patchPilot($, { refused: [...refused, call.slice(0, 300)].slice(-REFUSED_KEEP) })
+}
+
 // Sends only while the session is still quiet: the owner may have typed during a slow review.
 const send = async ($: $, text: string): Promise<boolean> => {
   if ((await getPilot($)).isTurnRunning) return false
@@ -413,7 +543,9 @@ const followUp = async ($: $, answer: string, pilot: NightshiftPilot): Promise<b
     return false
   }
   if (step.action === 'nudge' && ending === 'asks-a-question') {
-    const reply = await $.model.fork({ prompt: standInPrompt(pilot.goal) })
+    const settled = pilot.settled ?? []
+    const refused = pilot.refused ?? []
+    const reply = await $.model.fork({ prompt: standInPrompt(pilot.goal, settled, refused) })
     const answers = reply.isAnswered ? reply.text.trim() : ''
     if (/^NONE/i.test(answers)) {
       // Nothing was really left open (a summary of decisions read as questions): say nothing.
@@ -421,8 +553,21 @@ const followUp = async ($: $, answer: string, pilot: NightshiftPilot): Promise<b
       await log($, 'answer', 'nothing left open; no message sent')
       return false
     }
-    await log($, 'answer', answers ? answers.replace(/\s+/g, ' ') : `no stand-in answer (${reply.isAnswered ? 'empty' : reply.reason})`)
-    return send($, answers ? answersText(answers) : nudgeText(ending, pilot.goal))
+    if (!answers) {
+      await log($, 'answer', `no stand-in answer (${reply.isAnswered ? 'empty' : reply.reason})`)
+      return send($, nudgeText(ending, pilot.goal))
+    }
+    const fresh = settleAnswers(answers, settled, refused)
+    if (fresh.length === 0) {
+      // Every question was settled before: never answer it again. It stays for the owner.
+      await patchPilot($, { nudgesInRow: pilot.nudgesInRow })
+      await log($, 'answer', 'only questions settled before; no message sent')
+      return false
+    }
+    await patchPilot($, { settled: [...settled, ...fresh].slice(-SETTLED_KEEP) })
+    const text = fresh.map((item, at) => `${at + 1}. ${item.question}${item.answer ? ` - ${item.answer}` : ''}`).join('\n')
+    await log($, 'answer', text.replace(/\s+/g, ' '))
+    return send($, answersText(text))
   }
   if (step.action === 'nudge') {
     await log($, 'nudge', `${ending}: ${answer.slice(-160).replace(/\s+/g, ' ')}`)
@@ -453,20 +598,37 @@ const tick = async ($: $, stallMs: number): Promise<void> => {
   // call from any agent. A session whose agents are busy is left alone.
   // With work still in flight, give it until the stall limit before asking what's stuck.
   const quietMs = now - quietSince(pilot)
-  const limitMs = hasFreshStop(pilot) && pilot.workInFlight > 0 ? Math.max(pilot.everyMs, stallMs) : pilot.everyMs
-  if (!pilot.isTurnRunning && quietMs >= limitMs) {
+  const baseMs = hasFreshStop(pilot) && pilot.workInFlight > 0 ? Math.max(pilot.everyMs, stallMs) : pilot.everyMs
+  const limitFor = (p: NightshiftPilot): number => (isWaitingOnOwner(p.goals) ? checkInDelay(baseMs, p.idleChecks ?? 0) : baseMs)
+  if (!pilot.isTurnRunning && quietMs >= limitFor(pilot)) {
+    // The goal follows the latest status update, STATUS.md or goals tool call, unless the owner typed it.
+    const current = pilot.isGoalGiven ? pilot : await refreshGoal($, pilot)
+    if (quietMs < limitFor(current)) return showStatus($)
+    const isWaiting = isWaitingOnOwner(current.goals)
+    const idleChecks = isWaiting ? (current.idleChecks ?? 0) + 1 : 0
     // Stamp now so a slow start doesn't fire a second check.
-    await patchPilot($, { lastTurnEndAt: now, pendingAnswer: '' })
+    await patchPilot($, { lastTurnEndAt: now, pendingAnswer: '', idleChecks })
     // The last answer is followed up only now, after a whole quiet interval, so the owner
     // gets the chance to reply first.
-    if (pilot.pendingAnswer && (await followUp($, pilot.pendingAnswer, pilot))) return showStatus($)
+    if (pilot.pendingAnswer && (await followUp($, pilot.pendingAnswer, current))) return showStatus($)
     const after = await getPilot($)
     if (after.isGoalDone || after.isTurnRunning) return showStatus($)
-    await log($, 'check', `nothing happened for ${minutes(quietMs)}`)
-    void $.prompt.submit({ text: checkText(pilot.goal, quietMs) })
+    const nextMs = isWaiting ? checkInDelay(baseMs, idleChecks) : 0
+    await log($, 'check', `nothing happened for ${minutes(quietMs)}${isWaiting ? `; every open goal waits on the owner, next check-in after ${minutes(nextMs)}` : ''}`)
+    void $.prompt.submit({ text: checkText(current.goal, quietMs, nextMs) })
   }
 
   return showStatus($)
+}
+
+const refreshGoal = async ($: $, pilot: NightshiftPilot): Promise<NightshiftPilot> => {
+  const found = await goalFromConversation($).catch(() => undefined)
+  if (!found?.text) return pilot
+  const goals = found.goals
+  const isSame = found.text === pilot.goal && JSON.stringify(goals) === JSON.stringify(pilot.goals)
+  if (isSame) return pilot
+  // A new list starts the back-off afresh.
+  return patchPilot($, { goal: found.text, goals, idleChecks: 0 })
 }
 
 export const register: Register = (on, options) => {
@@ -495,6 +657,32 @@ export const register: Register = (on, options) => {
         type: 'object',
         properties: { done: { type: 'string', description: 'Each goal, and how you checked it is done.' } },
         required: ['done'],
+      },
+    }).catch(() => undefined)
+    // The session's way to keep nightshift's goal list, and STATUS.md's GOALS block, current.
+    await $.tool.register({
+      name: 'goals',
+      description:
+        "Sets the goal list nightshift tracks and rewrites the GOALS block of the project's STATUS.md to match. Pass the full list every time, each goal with its id (G1), the owner's own words and its state. Goals left out are removed. Returns what changed: goals added, removed, and moved from one state to another. Works whether nightshift is on or off.",
+      inputSchema: {
+        type: 'object',
+        properties: {
+          goals: {
+            type: 'array',
+            description: 'Every goal the owner asked for, finished ones included (marked DONE).',
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'string', description: 'The goal id, like G7. Ids never change.' },
+                words: { type: 'string', description: "The goal in the owner's words." },
+                state: { type: 'string', enum: [...GOAL_STATES] },
+              },
+              required: ['id', 'words', 'state'],
+            },
+          },
+          path: { type: 'string', description: "The STATUS.md to rewrite. Defaults to STATUS.md in the session's working folder." },
+        },
+        required: ['goals'],
       },
     }).catch(() => undefined)
     $.clock.every(60_000, () => void tick($, stallMs))
@@ -569,7 +757,9 @@ export const register: Register = (on, options) => {
     }
 
     // A goal the owner typed is kept; one taken from the conversation is rebuilt, so it follows the latest status.
-    const goal = parsed.goal || (pilot.isGoalGiven ? pilot.goal : '') || (await goalFromConversation($)) || pilot.goal
+    const found = parsed.goal || pilot.isGoalGiven ? undefined : await goalFromConversation($)
+    const goal = parsed.goal || (pilot.isGoalGiven ? pilot.goal : '') || found?.text || pilot.goal
+    const goals = parsed.goal ? undefined : pilot.isGoalGiven ? pilot.goals : (found?.goals ?? pilot.goals)
     const everyMs = parsed.everyMinutes ? parsed.everyMinutes * 60_000 : everyDefaultMs
     const now = await $.clock.now()
     const hasConversation = (await $.session.messages()).length > 0
@@ -578,6 +768,8 @@ export const register: Register = (on, options) => {
       isOn: true,
       isForced,
       goal,
+      goals,
+      idleChecks: 0,
       isGoalGiven: Boolean(parsed.goal) || (Boolean(pilot.isGoalGiven) && goal === pilot.goal),
       everyMs,
       isGoalDone: false,
@@ -618,7 +810,7 @@ export const register: Register = (on, options) => {
     // The owner typed something: they're here, so start the nudge count afresh.
     if (e.origin.kind === 'composer' || e.origin.kind === 'bridge') {
       const pilot = await getPilot($)
-      if (pilot.isOn) await patchPilot($, { nudgesInRow: 0, reviewRounds: 0, isGoalDone: false })
+      if (pilot.isOn) await patchPilot($, { nudgesInRow: 0, reviewRounds: 0, isGoalDone: false, idleChecks: 0 })
     }
 
     return next(e)
@@ -647,6 +839,7 @@ export const register: Register = (on, options) => {
       const input = e.input as { done?: unknown } | undefined
       return { result: await turnOffByAgent($, String(input?.done ?? '')) }
     }
+    if (e.tool === GOALS_TOOL) return { result: await setGoals($, e.input) }
     const pilot = await getPilot($)
     if (pilot.isOn) {
       await patchPilot($, {
@@ -660,7 +853,7 @@ export const register: Register = (on, options) => {
 
   on('tool.check', async ($, e, next) => {
     // Turning nightshift off is the session's own business: never a prompt.
-    if (e.tool === OFF_TOOL) return { decision: 'allow' }
+    if (e.tool === OFF_TOOL || e.tool === GOALS_TOOL) return { decision: 'allow' }
     const pilot = await getPilot($)
     if (!pilot.isOn) return next(e)
 
@@ -674,6 +867,18 @@ export const register: Register = (on, options) => {
     if (e.tool === 'EnterPlanMode') {
       return { decision: 'deny', reason: 'Nightshift is on: nobody can approve a plan. Skip plan mode and do the work.' }
     }
+
+    // A real call the session's rules or checks refused stays for the owner: the stand-in never answers it.
+    const verdict = await next(e)
+    if (verdict.decision === 'deny' && e.tool_use_id) await noteRefused($, `${describeCall(e.tool, e.input)} (${verdict.reason ?? 'refused'})`)
+
+    return verdict
+  }).catch(($, e, next) => next(e))
+
+  // Auto mode's safety check refused a call.
+  on('classic.PermissionDenied', async ($, e, next) => {
+    const pilot = await getPilot($)
+    if (pilot.isOn) await noteRefused($, `${describeCall(e.tool_name, e.tool_input)} (${e.reason || 'refused by a safety check'})`)
 
     return next(e)
   }).catch(($, e, next) => next(e))
@@ -690,6 +895,7 @@ export const register: Register = (on, options) => {
 
     if (risk === 'risky') {
       await log($, 'deny', call)
+      await noteRefused($, `${call} (refused by nightshift)`)
       return {
         decision: {
           behavior: 'deny',

@@ -1,8 +1,8 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { DEFAULT_BUDGET, riskText, afterTurn, describeCall, guessEnding, parseReview, reviewPrompt, neverRule, parseArgs, parseExtraDeny } from '../hooks/judge'
-import { openGoals } from '../hooks/register'
+import { DEFAULT_BUDGET, riskText, afterTurn, describeCall, guessEnding, parseReview, reviewPrompt, neverRule, parseArgs, parseExtraDeny, guardRefused, REFUSED_ANSWER } from '../hooks/judge'
+import { openGoals, settleAnswers } from '../hooks/register'
 
 const engine = (on: On, classifyAs: string) => {
   mock.clock(on, { now: 1_000_000 })
@@ -293,6 +293,11 @@ const engineWith = (on: On, messages: any[], files: Record<string, string> = {},
     if (key in files) return { value: files[key] as string }
     throw new Error(`ENOENT: ${e.path}`)
   })
+  on('fs.write', (_, e) => {
+    files[e.path.split(String.fromCharCode(92)).join('/')] = e.text
+    return { value: undefined }
+  })
+  on('ui.toast', () => ({ value: undefined }))
   on('session.id', () => ({ value: 's1' }))
   on('model.classify', () => ({ value: 'safe' }))
   on('prompt.submit', (_, e) => ({ text: e.text }))
@@ -388,4 +393,262 @@ test('goal: compaction summaries, system reminders and plugin prompts never beco
   expect(text).not.toContain('system-reminder')
   expect(text).not.toContain('Caveat')
   expect(text).not.toContain('plugin sent')
+})
+
+// ---- 1. A GOALS header with more text after it ----
+
+const NOV8 = ['Update: Nov 8.', '', 'GOALS', 'G1 an old goal from Nov 8 - DOING', '', 'WIP', '- G1: an old goal'].join('\n')
+
+// Owner, Nov 15: with "GOALS (updated Nov 14)" nightshift kept showing the Nov 8 list.
+test('goals: a header with more text after GOALS is read, quotes and trailing notes too', async ($, on) => {
+  const status = ['Update: Nov 14.', '', 'GOALS (updated Nov 14)', 'G7 "Click Verify in UE 5.8" - BLOCKED on the owner', 'G8 "Ship the menu" - DOING', 'G9 Old thing - DONE'].join('\n')
+  expect(openGoals(status)).toEqual(['G7 Click Verify in UE 5.8 (BLOCKED)', 'G8 Ship the menu (DOING)'])
+  expect(openGoals('## GOALS:\n- G2: fix the scroll - DOING')).toEqual(['G2 fix the scroll (DOING)'])
+  // Prose about goals is not a header.
+  expect(openGoals('Goals for today were set.\nG1 nope - DOING')).toEqual([])
+
+  engineWith(on, [said('user', 'make the game'), said('assistant', NOV8), said('assistant', status)])
+  await $.session.start({ cwd: 'H:/game', surface: 'terminal', isInteractive: true })
+  const { text } = await run($, '')
+  expect(text).toContain('G8 Ship the menu')
+  expect(text).not.toContain('Nov 8')
+})
+
+test('goals: when the latest status update has no goals block, nightshift says so and never reuses an old list', async ($, on) => {
+  engineWith(on, [
+    said('user', 'make the game'),
+    said('assistant', NOV8),
+    said('assistant', 'Update: the menu is in.\n\nGoals: menu done, combat next.\n\nWIP\n- combat'),
+  ])
+  await $.session.start({ cwd: 'H:/game', surface: 'terminal', isInteractive: true })
+  const { text } = await run($, '')
+  expect(text).toContain('No goal list')
+  expect(text).toContain('no GOALS block')
+  expect(text).toContain('make the game')
+  expect(text).not.toContain('old goal from Nov 8')
+})
+
+// ---- 2. Settled questions are never answered twice; check-ins back off while every goal waits on the owner ----
+
+test('settled: a question answered once is left out the next time', () => {
+  const first = settleAnswers('1. Click Verify in UE 5.8 - yes, click it when the window opens', [], [])
+  expect(first.length).toBe(1)
+  expect(settleAnswers('1. Click the Verify button in UE 5.8? - yes', first, [])).toEqual([])
+  expect(settleAnswers('1. Click Verify in UE 5.8 - yes\n2. Which sky colour - blue', first, []).map(item => item.question)).toEqual(['Which sky colour'])
+})
+
+// A session whose turns end with a question, for the stand-in tests.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const askingEngine = (on: On, forkText: string, sent: string[], prompts: string[]) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  mock.store(on)
+  on('ui.status', () => ({ value: undefined }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('command.register', () => ({ value: { command: 'nightshift' } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.messages', () => ({ value: [] }))
+  on('session.cwd', () => ({ value: 'H:/game' }))
+  on('fs.read', (_, e) => {
+    throw new Error(`ENOENT: ${e.path}`)
+  })
+  on('fs.write', () => ({ value: undefined }))
+  on('session.id', () => ({ value: 's1' }))
+  on('model.classify', () => ({ value: 'asks-a-question' }))
+  on('model.fork', (_, e) => {
+    prompts.push(e.prompt)
+    const usage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+    return { value: { isAnswered: true as const, text: forkText, usage } }
+  })
+  on('prompt.submit', (_, e) => {
+    sent.push(e.text)
+    return { text: e.text }
+  })
+  on('tool.check', () => ({ decision: 'ask' }))
+  on('classic.PermissionDenied', () => ({}))
+  on('agent.list', () => ({ value: [] }))
+  on('tool.register', (_, e) => ({ value: { tool: `mcp__nightshift__${e.name}` } }))
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  return clock
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const askTurn = async ($: any, id: string, answer: string): Promise<void> => {
+  await $.turn.start({ turnId: id, text: 'go' })
+  await $.turn.complete({ turnId: id, reason: 'answer', answer, isAborted: false })
+}
+
+const ANSWERED = 'Answers on their behalf'
+
+// Owner, Nov 15: it "settled" the UE 5.8 Verify click about 15 times with the same answer.
+test('settled: the same question asked again gets no second answer', async ($, on) => {
+  const sent: string[] = []
+  const prompts: string[] = []
+  const clock = askingEngine(on, '1. Click Verify in UE 5.8 - yes, click it', sent, prompts)
+  await $.session.start({ cwd: 'H:/game', surface: 'terminal', isInteractive: true })
+  await run($, 'port the game to UE 5.8')
+  await clock.advance(1000)
+
+  sent.length = 0
+  await askTurn($, 't1', 'The Verify button in UE 5.8 needs a click. Should I click it?')
+  await clock.advance(16 * 60_000)
+  expect(sent.filter(text => text.includes(ANSWERED)).length).toBe(1)
+
+  sent.length = 0
+  await askTurn($, 't2', 'The Verify button in UE 5.8 still needs a click. Should I click it?')
+  await clock.advance(16 * 60_000)
+  expect(sent.filter(text => text.includes(ANSWERED))).toEqual([])
+  // The stand-in was told it was settled already.
+  expect(prompts[prompts.length - 1]).toContain('Already settled')
+  expect(prompts[prompts.length - 1]).toContain('Click Verify in UE 5.8')
+})
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const setGoals = async ($: any, goals: { id: string; words: string; state: string }[], path?: string): Promise<string> =>
+  String((await $.tool.call({ tool: 'mcp__nightshift__goals', input: path ? { goals, path } : { goals } })).result)
+
+test('back-off: check-ins wait longer while every open goal is BLOCKED', async ($, on) => {
+  const sent: string[] = []
+  const clock = askingEngine(on, 'NONE', sent, [])
+  await $.session.start({ cwd: 'H:/game', surface: 'terminal', isInteractive: true })
+  await run($, 'port the game')
+  await setGoals($, [
+    { id: 'G1', words: 'Click Verify in UE 5.8', state: 'BLOCKED' },
+    { id: 'G2', words: 'Port the menu', state: 'DONE' },
+  ])
+  sent.length = 0
+  for (let minute = 0; minute < 110; minute++) await clock.advance(60_000)
+  const checks = sent.filter(text => text.includes('Nightshift check-in'))
+  // 15, then 30 later, then 60 later: 3 check-ins in 110 minutes.
+  expect(checks.length).toBe(3)
+  expect(checks[0]).toContain('No goal on the list is DOING')
+  expect(checks[0]).toContain('waits 30m')
+
+  // A goal that can move again brings the normal 15-minute check-ins back.
+  await setGoals($, [{ id: 'G1', words: 'Click Verify in UE 5.8', state: 'DOING' }])
+  sent.length = 0
+  for (let minute = 0; minute < 110; minute++) await clock.advance(60_000)
+  expect(sent.filter(text => text.includes('Nightshift check-in')).length).toBe(7)
+})
+
+// ---- 3. Never answer for an action a permission or safety check refused ----
+
+test('refused: an answer about a refused action is handed back to the owner', () => {
+  const refused = ['Bash: git push origin master (auto mode refused a push to the default branch)']
+  const out = guardRefused(
+    [
+      { question: 'Push the fix to master?', answer: 'yes, push' },
+      { question: 'The safety check blocked the deploy, retry?', answer: 'yes' },
+      { question: 'Which sky colour', answer: 'blue' },
+    ],
+    refused,
+  )
+  expect(out[0]?.answer).toBe(REFUSED_ANSWER)
+  expect(out[1]?.answer).toBe(REFUSED_ANSWER)
+  expect(out[2]?.answer).toBe('blue')
+})
+
+// Owner, Nov 15: Claude Code refused a push to master and nightshift answered "yes, push".
+test('refused: a push the safety check refused is never answered "yes" for the owner', async ($, on) => {
+  const sent: string[] = []
+  const prompts: string[] = []
+  const clock = askingEngine(on, '1. Push the fix to master - yes, push it\n2. Which sky colour - blue', sent, prompts)
+  await $.session.start({ cwd: 'H:/game', surface: 'terminal', isInteractive: true })
+  await run($, 'fix the save bug')
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await ($ as any).classic.PermissionDenied({
+    tool_name: 'Bash',
+    tool_input: { command: 'git push origin master' },
+    tool_use_id: 'u1',
+    reason: 'auto mode refused a push to the default branch',
+  })
+  await clock.advance(1000)
+  sent.length = 0
+  await askTurn($, 't1', 'The push to master was refused. Should I push it?')
+  await clock.advance(16 * 60_000)
+
+  const answers = sent.find(text => text.includes(ANSWERED)) ?? ''
+  expect(answers).toContain('leave it for the owner')
+  expect(answers).toContain('blue')
+  expect(answers).not.toContain('yes, push it')
+  expect(prompts[0]).toContain('git push origin master')
+  expect(prompts[0]).toContain('Never answer yes to an action')
+})
+
+// ---- 4. The goals tool ----
+
+const STATUS_NOV14 = [
+  'MISSION: make the game',
+  '',
+  'GOALS (updated Nov 14)',
+  'G1 "Build the menu" - DOING: menus first',
+  'G2 "Fix the save bug" - DOING',
+  'G3 "Port combat" - DOING',
+  '',
+  'NOTES',
+  '- keep it small',
+].join('\n')
+
+test('goals tool: tracks the new list, rewrites the GOALS block, and says what changed', async ($, on) => {
+  const files: Record<string, string> = { 'H:/game/STATUS.md': STATUS_NOV14 }
+  engineWith(on, [], files)
+  await $.session.start({ cwd: 'H:/game', surface: 'terminal', isInteractive: true })
+  await run($, '')
+
+  const report = await setGoals($, [
+    { id: 'G1', words: 'Build the menu', state: 'DOING' },
+    { id: 'G3', words: 'Port combat', state: 'DONE' },
+    { id: 'G4', words: 'Add the delve system', state: 'DOING' },
+  ])
+  expect(report).toContain('Rewrote the GOALS block in H:/game/STATUS.md')
+  expect(report).toContain('GOALS\nG1 Build the menu - DOING\nG3 Port combat - DONE\nG4 Add the delve system - DOING')
+  expect(report).toContain('CHANGED')
+  expect(report).toContain('- G4: added - DOING')
+  expect(report).toContain('- G3: DOING \u2192 DONE')
+  expect(report).toContain('- G2: removed (was "Fix the save bug" - DOING)')
+
+  // STATUS.md: the block is replaced, the rest kept, an unchanged goal keeps its note.
+  expect(files['H:/game/STATUS.md']).toBe(
+    [
+      'MISSION: make the game',
+      '',
+      'GOALS (updated Nov 14)',
+      'G1 "Build the menu" - DOING: menus first',
+      'G3 "Port combat" - DONE',
+      'G4 "Add the delve system" - DOING',
+      '',
+      'NOTES',
+      '- keep it small',
+    ].join('\n'),
+  )
+
+  // Nightshift now tracks the new list.
+  const status = (await run($, 'status')).text
+  expect(status).toContain('G4 Add the delve system')
+  expect(status).not.toContain('Fix the save bug')
+
+  // Nothing changed: it says so.
+  expect(
+    await setGoals($, [
+      { id: 'G1', words: 'Build the menu', state: 'DOING' },
+      { id: 'G3', words: 'Port combat', state: 'DONE' },
+      { id: 'G4', words: 'Add the delve system', state: 'DOING' },
+    ]),
+  ).toContain('CHANGED\nNothing.')
+  // A bad list changes nothing.
+  expect(await setGoals($, [{ id: 'X', words: '', state: 'MAYBE' }])).toContain('Nothing changed')
+})
+
+test('goals tool: makes STATUS.md when there is none, and /nightshift reads the latest call', async ($, on) => {
+  const files: Record<string, string> = {}
+  const call = { tool_use_id: 'g1', tool: 'mcp__nightshift__goals', input: { goals: [{ id: 'G5', words: 'Ship the build', state: 'DOING' }] } }
+  engineWith(on, [said('user', 'make the game'), said('assistant', NOV8), said('assistant', 'Updating goals.', [call])], files)
+  await $.session.start({ cwd: 'H:/game', surface: 'terminal', isInteractive: true })
+
+  expect(await setGoals($, [{ id: 'G5', words: 'Ship the build', state: 'DOING' }])).toContain('Created H:/game/STATUS.md')
+  expect(files['H:/game/STATUS.md']).toBe('# Status\n\nGOALS\nG5 "Ship the build" - DOING\n')
+
+  const { text } = await run($, '')
+  expect(text).toContain('G5 Ship the build')
+  expect(text).not.toContain('Nov 8')
 })

@@ -60,6 +60,7 @@ G3 | ... | dropped <date>: <why>
 - **Only the owner approves a goal,** in their own words. Everything else is proposed.
 - **Every task maps to a goal.** If it doesn't, it's a tangent: propose it, don't do it.
 - **Evals, scoring and research are tools, not goals.** Keep them short, and say which goal they serve.
+- **When a goal changes, tell nightshift.** When a goal is added, finished, blocked, paused or dropped, call the `mcp__nightshift__goals` tool with the full list (ID, the owner's words, state). It rewrites the GOALS block in STATUS.md and keeps nightshift on the same list. Then say what changed in the update's first sentences, using the lines the tool reports, for example "Goals changed: G4 added, G3 DOING → DONE, G2 removed." Skip this when the tool isn't there.
 
 ## Approved goals: keep going without asking
 
